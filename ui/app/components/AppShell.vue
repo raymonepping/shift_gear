@@ -103,7 +103,9 @@ const chain = computed(() => sealChainLabel.value)
                 : session.roles.isAuditor  ? 'AUDITOR'
                 : 'MEMBER'
               }}</span>
-              <a class="persona-out" href="/auth/logout">Sign out</a>
+              <form method="post" action="/auth/logout" class="persona-out-form">
+                <button type="submit" class="persona-out">Sign out</button>
+              </form>
             </span>
           </div>
         </header>
@@ -172,8 +174,10 @@ const chain = computed(() => sealChainLabel.value)
 .persona-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--vg-action-bright); box-shadow: 0 0 0 2px color-mix(in srgb, var(--vg-hue-blue) 18%, transparent); }
 .persona-name { font-weight: 650; color: var(--vg-text-primary); }
 .persona-role { font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--vg-action-bright); }
-.persona-out { padding: 2px 9px; border-radius: 100px; font-weight: 600; color: var(--vg-text-secondary); background: var(--vg-hover); }
+.persona-out-form { display: contents; }
+.persona-out { padding: 2px 9px; border-radius: 100px; font-weight: 600; color: var(--vg-text-secondary); background: var(--vg-hover); border: none; cursor: pointer; font-family: inherit; font-size: inherit; line-height: inherit; }
 .persona-out:hover { color: var(--vg-text-primary); }
+.persona-out:focus-visible { outline: 2px solid var(--vg-action-primary); outline-offset: 2px; }
 .sg-content { flex: 1; padding: 20px 24px 40px; min-width: 0; }
 
 @media (max-width: 900px) {
