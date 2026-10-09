@@ -241,3 +241,5 @@ playwright-report/
 .codex/
 .impeccable/
 /prompts/
+# /tests/
+# /scenarios/
