@@ -55,15 +55,18 @@ checks=(
 )
 
 fails=0 checked=0
-printf '%-22s %-14s %-55s %-8s %-8s\n' TOKEN VAULT PATH EXPECT RESULT
+printf '%-22s %-14s %-55s %-13s %-8s\n' TOKEN VAULT PATH EXPECT RESULT
 
 for check in "${checks[@]}"; do
   IFS='|' read -r file addr path expect <<<"${check}"
+  # Display name of the Vault: the first DNS label, without the scheme.
+  host="${addr#https://}"
+  host="${host%%.*}"
   token_file="${TOKENS_DIR}/${file}"
   # Fail closed: a missing token, a missing CA or a failed request is a FAIL,
   # never a pass (an empty answer would otherwise satisfy every "deny" row).
   if [[ ! -s "${token_file}" || ! -f "${CA_FILE}" ]]; then
-    printf '%-22s %-14s %-55s %-8s FAIL (missing token or CA)\n' "${file}" "${addr%%.*}" "${path}" "${expect}" >&2
+    printf '%-22s %-14s %-55s %-13s FAIL (missing token or CA)\n' "${file}" "${host}" "${path}" "${expect}" >&2
     fails=$((fails + 1)); checked=$((checked + 1))
     continue
   fi
@@ -72,7 +75,7 @@ for check in "${checks[@]}"; do
     -H "X-Vault-Token: $(<"${token_file}")" \
     -X POST -d "{\"paths\":[\"${path}\"]}" \
     "${addr}/v1/sys/capabilities-self" 2>/dev/null)"; then
-    printf '%-22s %-14s %-55s %-8s FAIL (request failed)\n' "${file}" "${addr%%.*}" "${path}" "${expect}" >&2
+    printf '%-22s %-14s %-55s %-13s FAIL (request failed)\n' "${file}" "${host}" "${path}" "${expect}" >&2
     fails=$((fails + 1)); checked=$((checked + 1))
     continue
   fi
@@ -83,10 +86,10 @@ for check in "${checks[@]}"; do
   [[ ",${caps}," == *",deny,"* ]] && has=no
 
   if [[ "${mode}" == "allow" && "${has}" == "yes" ]] || [[ "${mode}" == "deny" && "${has}" == "no" ]]; then
-    printf '%-22s %-14s %-55s %-8s PASS\n' "${file}" "${addr%%.*}" "${path}" "${expect}"
+    printf '%-22s %-14s %-55s %-13s PASS\n' "${file}" "${host}" "${path}" "${expect}"
     checked=$((checked + 1))
   else
-    printf '%-22s %-14s %-55s %-8s FAIL (caps=%s)\n' "${file}" "${addr%%.*}" "${path}" "${expect}" "${caps}" >&2
+    printf '%-22s %-14s %-55s %-13s FAIL (caps=%s)\n' "${file}" "${host}" "${path}" "${expect}" "${caps}" >&2
     fails=$((fails + 1))
     checked=$((checked + 1))
   fi

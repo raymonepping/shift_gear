@@ -17,7 +17,10 @@ warn()  { printf '\033[33mWARN\033[0m %s\n' "$*" >&2; }
 die()   { printf '\033[31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 log()   { printf '==> %s\n' "$*" >&2; }
 
-require_cmd() { command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"; }
+require_cmd() {
+  local c
+  for c in "$@"; do command -v "${c}" >/dev/null 2>&1 || die "Required command not found: ${c}"; done
+}
 
 require_kubeconfig() {
   [[ -s "${ROOT_DIR}/.secrets/kube/config" ]] || die ".secrets/kube/config not found — run 'make crc-up' first"

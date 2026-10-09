@@ -30,7 +30,7 @@ done
 if [[ -n "${new_pod}" && "${new_pod}" != "${before_pod}" ]]; then
   ok "workload-a rolled: ${before_pod} → ${new_pod}"
 else
-  warn "workload-a did not roll within 90 s (VSO may be slower in this env) — current: ${new_pod:-none}"
+  die "workload-a did not roll within 90 s — current pod: ${new_pod:-none}"
 fi
 
 ok "Scenario 06 PASS: app-config updated, VSO synced, workload-a rolled"

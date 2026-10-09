@@ -58,14 +58,16 @@ fi
 # Verify old user no longer exists in postgres
 pg_pod=$(oc -n sg-workloads get pod -l app.kubernetes.io/name=postgres \
   -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-if [[ -n "${pg_pod}" ]]; then
+[[ -n "${pg_pod}" ]] || die "postgres pod not found"
+# Revocation runs Vault's revocation statement; give it up to 30 s.
+old_exists=1
+for _ in $(seq 1 10); do
   old_exists=$(oc -n sg-workloads exec "${pg_pod}" -- \
     psql -U postgres -tAc "SELECT COUNT(*) FROM pg_roles WHERE rolname='${old_user}'" 2>/dev/null || echo "1")
-  if [[ "${old_exists}" == "0" ]]; then
-    ok "Old user '${old_user}' gone from pg_roles ✓"
-  else
-    warn "Old user '${old_user}' still in pg_roles (revocation may be async)"
-  fi
-fi
+  [[ "${old_exists}" == "0" ]] && break
+  sleep 3
+done
+[[ "${old_exists}" == "0" ]] || die "Old user '${old_user}' still in pg_roles 30 s after revocation"
+ok "Old user '${old_user}' gone from pg_roles"
 
 ok "Scenario 07 PASS: lease revoked, new credential issued, old user removed"
