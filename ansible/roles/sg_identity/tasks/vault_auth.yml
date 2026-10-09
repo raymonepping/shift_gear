@@ -190,8 +190,8 @@
         (sg_identity_auth_roles[item.item].bound_audiences | sort)
           != (item.json.data.bound_audiences | default([], true) | sort) or
         sg_identity_auth_roles[item.item].role_type != item.json.data.role_type or
-        (sg_identity_auth_roles[item.item].claim_mappings | default({}))
-          != (item.json.data.claim_mappings | default({}))
+        (sg_identity_auth_roles[item.item].claim_mappings | default({}, true))
+          != (item.json.data.claim_mappings | default({}, true))
 
     # ── LDAP config ───────────────────────────────────────────────────────────
     - name: Read LDAP config
