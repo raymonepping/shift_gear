@@ -31,10 +31,16 @@ export default defineEventHandler(async (event) => {
     ...((auth.identity_policies as string[]) ?? []),
   ]
 
+  // display_name is mapped from the given_name JWT claim via the OIDC role's
+  // claim_mappings (vault_auth.yml). username is the preferred_username claim.
+  // Neither metadata?.name nor metadata?.full_name is emitted by this Keycloak config.
+  const username = metadata?.username ?? 'unknown'
+  const displayName = metadata?.display_name ?? username
+
   await createSession(event, {
     vaultToken: token,
-    username: metadata?.username ?? 'unknown',
-    displayName: metadata?.name ?? metadata?.username ?? 'unknown',
+    username,
+    displayName,
     entityId: (auth.entity_id as string | undefined) ?? null,
     groups: (auth.identity_policies as string[] | undefined) ?? [],
     policies: (auth.token_policies as string[]) ?? [],
@@ -42,7 +48,6 @@ export default defineEventHandler(async (event) => {
     expiresAt: Date.now() + leaseDuration * 1000,
   })
 
-  // Suppress unused variable lint for allPolicies (it will be used when role logic is added)
   void allPolicies
 
   return sendRedirect(event, '/')

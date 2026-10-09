@@ -96,7 +96,13 @@ const chain = computed(() => sealChainLabel.value)
             <span v-if="session" class="persona">
               <span class="persona-dot" aria-hidden="true" />
               <span class="persona-name">{{ session.displayName }}</span>
-              <span class="persona-role">{{ session.roles.isAdmin ? 'ADMIN' : session.roles.isOperator ? 'OPERATOR' : session.roles.isAuditor ? 'AUDITOR' : 'ENGINEER' }}</span>
+              <span class="persona-role">{{
+                session.roles.isAdmin      ? 'ADMIN'
+                : session.roles.isOperator ? 'OPERATOR'
+                : session.roles.isEngineer ? 'ENGINEER'
+                : session.roles.isAuditor  ? 'AUDITOR'
+                : 'MEMBER'
+              }}</span>
               <a class="persona-out" href="/auth/logout">Sign out</a>
             </span>
           </div>

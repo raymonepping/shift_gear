@@ -219,6 +219,80 @@
             'result': 'pass' if sg_validate_db_creds_secret.resources | length > 0 else 'fail',
             'detail': 'present' if sg_validate_db_creds_secret.resources | length > 0 else 'absent'}] }}
 
+# ── Socket audit device → collector ──────────────────────────────────────────
+# Proves the whole path: Vault's socket device delivers to sg-audit. The count
+# is read inside the collector pod (no new network exposure), the check makes
+# one audited request of its own, and the count must grow.
+
+- name: Find the audit collector pod
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ sg_validate_kubeconfig }}"
+    kind: Pod
+    namespace: sg-app
+    label_selectors: [app.kubernetes.io/name=sg-audit]
+    field_selectors: [status.phase=Running]
+  check_mode: false
+  register: sg_validate_audit_pods
+
+- name: Read the collector's received count (before)
+  kubernetes.core.k8s_exec:
+    kubeconfig: "{{ sg_validate_kubeconfig }}"
+    namespace: sg-app
+    pod: "{{ (sg_validate_audit_pods.resources | first).metadata.name }}"
+    command: >-
+      node -e "fetch('http://127.0.0.1:8080/audit?limit=0').then(r=>r.json()).then(j=>console.log(j.collector.received))"
+  check_mode: false
+  changed_when: false
+  failed_when: false
+  register: sg_validate_audit_before
+  when: sg_validate_audit_pods.resources | length > 0
+
+- name: Make one audited request (token lookup-self)
+  ansible.builtin.uri:
+    url: "{{ sg_validate_vault_addr }}/v1/auth/token/lookup-self"
+    ca_path: "{{ sg_validate_vault_ca }}"
+    headers:
+      X-Vault-Token: "{{ sg_validate_token }}"
+    status_code: [200]
+  check_mode: false
+  no_log: true
+
+- name: Read the collector's received count (after)
+  kubernetes.core.k8s_exec:
+    kubeconfig: "{{ sg_validate_kubeconfig }}"
+    namespace: sg-app
+    pod: "{{ (sg_validate_audit_pods.resources | first).metadata.name }}"
+    command: >-
+      node -e "fetch('http://127.0.0.1:8080/audit?limit=0').then(r=>r.json()).then(j=>console.log(j.collector.received))"
+  check_mode: false
+  changed_when: false
+  failed_when: false
+  register: sg_validate_audit_after
+  until: >-
+    (sg_validate_audit_after.stdout | default('0') | trim | int)
+    > (sg_validate_audit_before.stdout | default('0') | trim | int)
+  retries: 5
+  delay: 2
+  when: sg_validate_audit_pods.resources | length > 0
+
+- name: Record the audit collector check
+  vars:
+    sg_validate_audit_n0: "{{ sg_validate_audit_before.stdout | default('') | trim }}"
+    sg_validate_audit_n1: "{{ sg_validate_audit_after.stdout | default('') | trim }}"
+    sg_validate_audit_ok: >-
+      {{ sg_validate_audit_pods.resources | length > 0
+         and sg_validate_audit_n0 is match('^[0-9]+$')
+         and sg_validate_audit_n1 is match('^[0-9]+$')
+         and (sg_validate_audit_n1 | int) > (sg_validate_audit_n0 | int) }}
+  ansible.builtin.set_fact:
+    sg_validate_rows: >-
+      {{ sg_validate_rows + [
+           {'id': 'audit-socket-collector',
+            'label': 'Socket audit device delivers to the sg-audit collector',
+            'result': 'pass' if sg_validate_audit_ok | bool else 'fail',
+            'detail': ('received ' ~ sg_validate_audit_n0 ~ ' → ' ~ sg_validate_audit_n1)
+                      if sg_validate_audit_pods.resources | length > 0 else 'no running sg-audit pod'}] }}
+
 # ── Identity verify report ────────────────────────────────────────────────────
 
 - name: Read identity verify report if present

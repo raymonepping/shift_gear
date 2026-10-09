@@ -11,9 +11,14 @@ let timer: ReturnType<typeof setInterval> | undefined
 onMounted(() => { timer = setInterval(() => refresh(), 5_000) })
 onBeforeUnmount(() => clearInterval(timer))
 
-const offline = computed(() =>
-  data.value ? (!data.value.collector.listening || data.value.collector.connections === 0) : false,
+const unreachable = computed(() => data.value ? data.value.state !== 'live' : false)
+const noConnection = computed(() =>
+  data.value?.state === 'live' && (!data.value.collector.listening || data.value.collector.connections === 0),
 )
+const since = computed(() => {
+  const t = data.value?.collector.startedAt
+  return t ? new Date(t).toLocaleString() : null
+})
 
 const entries = computed(() => {
   const all = data.value?.entries ?? []
@@ -37,10 +42,15 @@ const types = computed(() => {
       </p>
     </section>
 
-    <p v-if="offline" class="inline-notice inline-notice--warn" role="status">
-      The audit collector has no active connection from Vault right now. The stdout audit device
-      still records everything — but this live feed has a gap until the collector reconnects.
+    <p v-if="unreachable" class="inline-notice inline-notice--warn" role="status">
+      The audit collector cannot be reached right now, so this page shows no entries. Vault keeps
+      serving: its stdout audit device still records every request.
     </p>
+    <p v-else-if="noConnection" class="inline-notice inline-notice--warn" role="status">
+      The audit collector has no active connection from Vault right now. The stdout audit device
+      still records everything, but this live feed has a gap until Vault reconnects.
+    </p>
+    <p v-else-if="since" class="sg-since">Counting since the collector started, {{ since }}.</p>
 
     <div v-if="data" class="sg-audit-tiles vg-grid-4">
       <div class="vg-tile"><span class="vg-tile__label">Received</span><span class="vg-tile__value">{{ data.collector.received }}</span></div>
@@ -88,7 +98,7 @@ const types = computed(() => {
               <td class="sg-err">{{ e.error ? e.error.replace(/\s+/g, ' ').slice(0, 80) : '' }}</td>
             </tr>
             <tr v-if="!checking && entries.length === 0">
-              <td colspan="7" class="sg-empty">No entries yet — waiting for Vault traffic</td>
+              <td colspan="7" class="sg-empty">{{ unreachable ? 'No entries: the collector is unreachable' : 'No entries yet: waiting for Vault traffic' }}</td>
             </tr>
           </tbody>
         </table>
@@ -112,6 +122,7 @@ const types = computed(() => {
 .sg-policies { max-width: 24ch; overflow-wrap: anywhere; font-size: 11.5px; }
 .sg-hmac { max-width: 20ch; overflow-wrap: anywhere; font-size: 11.5px; color: var(--vg-text-muted); }
 .sg-err { color: var(--vg-critical); font-size: 12px; max-width: 28ch; }
+.sg-since { margin: 0; font-size: 12.5px; color: var(--vg-text-secondary); }
 .sg-empty { text-align: center; padding: 24px; color: var(--vg-text-muted); font-size: 13px; }
 .sg-spin { display: inline-block; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }

@@ -235,13 +235,20 @@ export interface AuditEntry {
   hmacFields: string[]
 }
 
+export type AuditState = 'live' | 'unreachable' | 'unconfigured'
+
 export interface AuditResponse {
+  /** live: read from the sg-audit collector just now. */
+  state: AuditState
   collector: {
     listening: boolean
     connections: number
     received: number
     stored: number
     dropped: number
+    malformed?: number
+    startedAt?: string
+    lastEntryAt?: string | null
   }
   entries: AuditEntry[]
 }

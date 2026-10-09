@@ -36,3 +36,14 @@ test('collector stat tiles are present', async ({ browser }) => {
   await expect(page.locator('.vg-tile', { hasText: /stored/i })).toBeVisible()
   await context.close()
 })
+
+test('the collector is live and Vault entries arrive (finn)', async ({ browser }) => {
+  // Signing in is itself audited, so there is always at least one entry.
+  const { context, page } = await pageAs(browser, 'finn')
+  await page.goto('/audit')
+  await page.waitForLoadState('networkidle')
+  await expect(page.getByText(/counting since the collector started/i)).toBeVisible()
+  await expect(page.locator('.vg-tile', { hasText: /connections/i }).locator('.vg-tile__value')).not.toHaveText('0')
+  await expect(page.locator('.vg-table tbody tr').first().locator('td').first()).not.toHaveText(/no entries/i)
+  await context.close()
+})

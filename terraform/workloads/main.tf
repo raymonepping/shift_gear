@@ -1536,6 +1536,10 @@ resource "kubernetes_deployment" "ui" {
             name  = "NUXT_EVIDENCE_DIR"
             value = "/evidence"
           }
+          env {
+            name  = "NUXT_AUDIT_API_BASE"
+            value = "http://${kubernetes_service.audit_collector.metadata[0].name}.sg-app.svc:8080"
+          }
           readiness_probe {
             http_get {
               path = "/api/health"
@@ -1624,6 +1628,179 @@ resource "kubernetes_manifest" "route_ui" {
         kind   = "Service"
         name   = "sg-ui"
         weight = 100
+      }
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Audit collector (sg-audit, sg-app): the far end of Vault's socket audit
+# device, and the source of the console's Audit page. A dependency-free Node
+# program (collector/server.mjs) mounted from a ConfigMap onto a pinned UBI
+# Node.js image: no image build, so it stays out of the Ansible build path.
+# The platform root enables the socket device; Vault refuses to enable one it
+# cannot reach, so this Deployment waits for its rollout.
+# ---------------------------------------------------------------------------
+locals {
+  audit_collector_source = file("${path.module}/../../collector/server.mjs")
+}
+
+resource "kubernetes_config_map" "audit_collector" {
+  metadata {
+    name      = "sg-audit-collector"
+    namespace = "sg-app"
+    labels    = merge(local.labels, { "app.kubernetes.io/name" = "sg-audit" })
+  }
+  data = {
+    "server.mjs" = local.audit_collector_source
+  }
+}
+
+resource "kubernetes_deployment" "audit_collector" {
+  metadata {
+    name      = "sg-audit"
+    namespace = "sg-app"
+    labels    = merge(local.labels, { "app.kubernetes.io/name" = "sg-audit" })
+  }
+  spec {
+    replicas = 1
+    selector {
+      match_labels = { "app.kubernetes.io/name" = "sg-audit" }
+    }
+    template {
+      metadata {
+        labels = merge(local.labels, { "app.kubernetes.io/name" = "sg-audit" })
+        annotations = {
+          "openshift.io/required-scc" = "restricted-v2"
+          # A new collector program rolls the pod.
+          "shift-gear/collector-sha256" = sha256(local.audit_collector_source)
+        }
+      }
+      spec {
+        automount_service_account_token = false
+        security_context {
+          run_as_non_root = true
+          seccomp_profile {
+            type = "RuntimeDefault"
+          }
+        }
+        container {
+          name = "collector"
+          # registry.access.redhat.com/ubi9/nodejs-22-minimal, multi-arch
+          # manifest list (arm64 + amd64), pinned 2026-10-09.
+          image   = "registry.access.redhat.com/ubi9/nodejs-22-minimal@sha256:03b7dd64cafaaca5019c4cc1c36e05140b1650dab6cd5c4ab1fde9d88c0537ca"
+          command = ["node", "/opt/collector/server.mjs"]
+          port {
+            name           = "ingest"
+            container_port = 9090
+          }
+          port {
+            name           = "http"
+            container_port = 8080
+          }
+          readiness_probe {
+            http_get {
+              path = "/healthz"
+              port = 8080
+            }
+            period_seconds = 5
+          }
+          liveness_probe {
+            http_get {
+              path = "/healthz"
+              port = 8080
+            }
+            period_seconds    = 20
+            failure_threshold = 3
+          }
+          security_context {
+            allow_privilege_escalation = false
+            read_only_root_filesystem  = true
+            run_as_non_root            = true
+            capabilities {
+              drop = ["ALL"]
+            }
+          }
+          resources {
+            requests = { cpu = "10m", memory = "32Mi" }
+            limits   = { memory = "128Mi" }
+          }
+          volume_mount {
+            name       = "collector"
+            mount_path = "/opt/collector"
+            read_only  = true
+          }
+        }
+        volume {
+          name = "collector"
+          config_map {
+            name = kubernetes_config_map.audit_collector.metadata[0].name
+          }
+        }
+      }
+    }
+  }
+  wait_for_rollout = true
+}
+
+resource "kubernetes_service" "audit_collector" {
+  metadata {
+    name      = "sg-audit"
+    namespace = "sg-app"
+    labels    = local.labels
+  }
+  spec {
+    selector = { "app.kubernetes.io/name" = "sg-audit" }
+    port {
+      name        = "ingest"
+      port        = 9090
+      target_port = 9090
+    }
+    port {
+      name        = "http"
+      port        = 8080
+      target_port = 8080
+    }
+  }
+}
+
+# Only Vault may write audit lines (9090), and only the console may read them
+# (8080). Selects the collector pods only; the console's own ingress is
+# untouched.
+resource "kubernetes_network_policy" "audit_collector" {
+  metadata {
+    name      = "sg-audit-ingress"
+    namespace = "sg-app"
+    labels    = local.labels
+  }
+  spec {
+    pod_selector {
+      match_labels = { "app.kubernetes.io/name" = "sg-audit" }
+    }
+    policy_types = ["Ingress"]
+    ingress {
+      from {
+        namespace_selector {
+          match_labels = { "kubernetes.io/metadata.name" = "sg-vault" }
+        }
+        pod_selector {
+          match_labels = { "app.kubernetes.io/name" = "vault" }
+        }
+      }
+      ports {
+        port     = 9090
+        protocol = "TCP"
+      }
+    }
+    ingress {
+      from {
+        pod_selector {
+          match_labels = { "app.kubernetes.io/name" = "sg-ui" }
+        }
+      }
+      ports {
+        port     = 8080
+        protocol = "TCP"
       }
     }
   }

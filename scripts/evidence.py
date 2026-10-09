@@ -204,6 +204,17 @@ def main() -> int:
                            "pluginVersion": m.get("running_plugin_version") or None,
                            "enterprise": m.get("type") in ENTERPRISE_ENGINES})
 
+    # ── Audit collector (sg-audit): counters only ────────────────────────────
+    audit_counters = {"listening": False, "connections": 0, "received": 0, "stored": 0, "dropped": 0}
+    audit_pods = (oc("-n", "sg-app", "get", "pods", "-l", "app.kubernetes.io/name=sg-audit",
+                     "--field-selector=status.phase=Running") or {}).get("items") or []
+    if audit_pods:
+        got = oc_exec_json("sg-app", audit_pods[0]["metadata"]["name"], "collector", "node", "-e",
+                           "fetch('http://127.0.0.1:8080/audit?limit=0').then(r=>r.json())"
+                           ".then(j=>console.log(JSON.stringify(j.collector)))")
+        if got:
+            audit_counters = {k: got.get(k, audit_counters[k]) for k in audit_counters}
+
     # Engines Terraform deliberately leaves unmounted (terraform/platform output).
     skipped_engines = (read_json(BUILD / "terraform" / "platform.json") or {}).get("skipped_engines") or []
 
@@ -383,8 +394,9 @@ def main() -> int:
         "ansible": {"convergence": {"appliedDigest": applied_digest, "currentDigest": current_digest,
                                     "lastRun": conv.get("finished_at")},
                     "validate": {"generatedAt": val.get("generated_at"), "rows": val_rows}},
-        # No socket-audit collector in this build: reported as such, never invented.
-        "audit": {"listening": False, "connections": 0, "received": 0, "stored": 0, "dropped": 0, "entries": []},
+        # Counters only, read inside the collector pod; entries stay live (the
+        # Audit page reads the collector), never in the evidence snapshot.
+        "audit": audit_counters,
         "agents": agents,
     }
     BUILD.mkdir(exist_ok=True)

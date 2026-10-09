@@ -214,3 +214,33 @@ locals {
     )
   )
 }
+
+# ── Socket audit device (to the collector the workloads root runs) ────────────
+# Feeds the console's Audit page. The file device above stays: Vault blocks a
+# request only when every audit device fails, so stdout keeps Vault serving
+# while the collector restarts. Vault refuses to enable a socket device it
+# cannot reach; the workloads root waits for the collector's rollout first.
+data "terraform_remote_state" "workloads" {
+  backend = "local"
+  config = {
+    path = "../../.secrets/terraform/workloads/terraform.tfstate"
+  }
+}
+
+resource "vault_audit" "socket" {
+  type        = "socket"
+  path        = "socket"
+  description = "Socket audit device: JSON lines to the sg-audit collector (console Audit page)"
+  options = {
+    address     = try(data.terraform_remote_state.workloads.outputs.audit_collector.ingest_address, "")
+    socket_type = "tcp"
+    format      = "json"
+  }
+
+  lifecycle {
+    precondition {
+      condition     = try(data.terraform_remote_state.workloads.outputs.audit_collector.ingest_address, "") != ""
+      error_message = "The workloads root has no audit_collector output: run 'make workloads' before 'make platform'."
+    }
+  }
+}

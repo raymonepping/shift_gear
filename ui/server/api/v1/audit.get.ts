@@ -1,33 +1,27 @@
-// server/api/v1/audit.get.ts — Audit log from the socket collector.
-// The sg_ux role enables the socket audit device and the API server collects entries.
-// This endpoint proxies through the BFF to the API server's in-memory log.
+// server/api/v1/audit.get.ts — Vault's audit stream, as the sg-audit collector
+// received it from Vault's socket audit device. Entries arrive HMAC'd by Vault.
+// Live only: when the collector is unreachable the page says so, rather than
+// showing a snapshot as if it were live.
 import { requireSession } from '../../utils/session'
-import { readEvidence } from '../../utils/evidence'
 import type { AuditResponse } from '../../../shared/types'
 
+const EMPTY = { listening: false, connections: 0, received: 0, stored: 0, dropped: 0 }
+
 export default defineEventHandler(async (event) => {
+  // Every signed-in person may read it, as designed (useAuth canAudit): values
+  // arrive HMAC'd by Vault, so the page shows who did what, never a secret.
   await requireSession(event)
-  const config = useRuntimeConfig()
-  const auditApiBase = config.auditApiBase as string // internal: http://sg-api.shift-gear.svc:3001
-
-  // Try live collector endpoint first
-  if (auditApiBase) {
-    try {
-      const res = await $fetch<AuditResponse>(`${auditApiBase}/audit`, { timeout: 3000 })
-      return res
-    } catch { /* fall through to evidence */ }
+  const base = useRuntimeConfig().auditApiBase as string // NUXT_AUDIT_API_BASE, e.g. http://sg-audit.sg-app.svc:8080
+  if (!base) {
+    return { state: 'unconfigured', collector: EMPTY, entries: [] } satisfies AuditResponse
   }
-
-  // Fallback: evidence snapshot (possibly stale but shows that the mechanism exists)
-  const ev = await readEvidence()
-  return {
-    collector: {
-      listening: ev?.audit?.listening ?? false,
-      connections: ev?.audit?.connections ?? 0,
-      received: ev?.audit?.received ?? 0,
-      stored: ev?.audit?.stored ?? 0,
-      dropped: ev?.audit?.dropped ?? 0,
-    },
-    entries: ev?.audit?.entries ?? [],
-  } satisfies AuditResponse
+  try {
+    const res = await $fetch<Omit<AuditResponse, 'state'>>(`${base}/audit`, {
+      query: { limit: 200 },
+      timeout: 3000,
+    })
+    return { state: 'live', collector: res.collector, entries: res.entries } satisfies AuditResponse
+  } catch {
+    return { state: 'unreachable', collector: EMPTY, entries: [] } satisfies AuditResponse
+  }
 })

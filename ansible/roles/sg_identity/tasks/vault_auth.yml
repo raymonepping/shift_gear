@@ -149,6 +149,12 @@
             allowed_redirect_uris: "{{ sg_identity_oidc_redirect_uris }}"
             token_ttl: 1800
             token_max_ttl: 7200
+            # Map given_name from the Keycloak profile scope into auth.metadata
+            # so the BFF can display the first name without an extra claim_mappings
+            # lookup. The profile scope provides given_name and family_name; name
+            # is not emitted by Keycloak's default "full name" mapper.
+            claim_mappings:
+              display_name: given_name
           # Lab only: sg-cli id_tokens for identity-verify gate tests.
           jwt/cli:
             role_type: jwt
@@ -183,7 +189,9 @@
         sg_identity_auth_roles[item.item].groups_claim != item.json.data.groups_claim or
         (sg_identity_auth_roles[item.item].bound_audiences | sort)
           != (item.json.data.bound_audiences | default([], true) | sort) or
-        sg_identity_auth_roles[item.item].role_type != item.json.data.role_type
+        sg_identity_auth_roles[item.item].role_type != item.json.data.role_type or
+        (sg_identity_auth_roles[item.item].claim_mappings | default({}))
+          != (item.json.data.claim_mappings | default({}))
 
     # ── LDAP config ───────────────────────────────────────────────────────────
     - name: Read LDAP config

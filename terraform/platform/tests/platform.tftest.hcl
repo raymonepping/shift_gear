@@ -125,3 +125,29 @@ run "audit_device_is_file" {
     error_message = "Audit file_path must be stdout"
   }
 }
+
+override_data {
+  target = data.terraform_remote_state.workloads
+  values = {
+    outputs = {
+      audit_collector = {
+        ingest_address = "sg-audit.sg-app.svc:9090"
+        read_url       = "http://sg-audit.sg-app.svc:8080"
+      }
+    }
+  }
+}
+
+run "socket_audit_device_targets_the_collector" {
+  command = plan
+
+  assert {
+    condition     = vault_audit.socket.type == "socket" && vault_audit.socket.options["address"] == "sg-audit.sg-app.svc:9090"
+    error_message = "The socket audit device must write to the collector the workloads root exports"
+  }
+
+  assert {
+    condition     = vault_audit.file.type == "file"
+    error_message = "The file audit device must stay: it keeps Vault serving while the collector restarts"
+  }
+}
