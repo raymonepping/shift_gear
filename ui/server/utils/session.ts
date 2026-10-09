@@ -51,7 +51,10 @@ export async function getSession(event: H3Event): Promise<SgSession | null> {
 export async function destroySession(event: H3Event) {
   const id = getCookie(event, COOKIE)
   if (id) await store().removeItem(id)
-  deleteCookie(event, COOKIE, { path: '/' })
+  // Match the original cookie's Secure flag so browsers on HTTPS actually
+  // clear it. A Secure cookie is only deleted when the clearing Set-Cookie
+  // also carries the Secure attribute.
+  deleteCookie(event, COOKIE, { path: '/', secure: secure(event), sameSite: 'lax' })
 }
 
 export async function requireSession(event: H3Event): Promise<SgSession> {
