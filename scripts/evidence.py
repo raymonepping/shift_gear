@@ -118,19 +118,24 @@ def build_layers(applied_digest, current_digest) -> dict:
             if line.strip() and not line.startswith("#"):
                 name, _, reason = line.partition(" ")
                 allowed[name] = reason.strip()
+    conv = read_json(BUILD / "convergence.json") or {}
+    phase_secs: dict = conv.get("phase_seconds") or {}
+    gate_secs: dict = conv.get("gate_seconds") or {}
     phases = []
     for line in (ROOT / "scripts" / "phases.txt").read_text().splitlines():
         parts = line.split()
         if len(parts) != 2 or line.startswith("#"):
             continue
         tool, name = parts
+        dur = phase_secs.get(name)
         if tool == "tf":
             state = read_json(SECRETS / "terraform" / name / "terraform.tfstate") or {}
             runs = read_json(BUILD / "terraform" / f"{name}.runs.json") or {}
             plan = runs.get("last_plan") or {}
             phases.append({"phase": name, "tool": "terraform", "resources": len(state.get("resources", [])),
                            "last_apply": runs.get("last_apply"),
-                           "last_plan": {"result": plan.get("result"), "at": plan.get("at")} if plan else None})
+                           "last_plan": {"result": plan.get("result"), "at": plan.get("at")} if plan else None,
+                           "durationSeconds": dur})
         else:
             run = read_json(BUILD / "ansible-stats" / f"{name}.json") or {}
             chk = read_json(BUILD / "ansible-stats" / f"{name}.check.json") or {}
@@ -138,13 +143,15 @@ def build_layers(applied_digest, current_digest) -> dict:
                            "last_run": {"at": run.get("finished_at"), "changed": run.get("changed_total"),
                                         "failed": run.get("failed_total", 0)} if run else None,
                            "last_check": {"at": chk.get("finished_at"), "changed": chk.get("changed_total")} if chk else None,
-                           "allowed_changes": allowed.get(name)})
+                           "allowed_changes": allowed.get(name),
+                           "durationSeconds": dur})
     gates = {}
     for gate in ("idempotency", "drift", "secret-scan", "validation"):
         g = read_json(BUILD / "gates" / f"{gate}.json") or {}
         if gate == "validation" and "result" not in g and "rows" in g:
             g = {"result": "pass" if g.get("fail_count", 1) == 0 else "fail", "at": g.get("generated_at")}
-        gates[gate] = {"result": g.get("result", "unknown"), "at": g.get("at")}
+        gates[gate] = {"result": g.get("result", "unknown"), "at": g.get("at"),
+                       "durationSeconds": gate_secs.get(gate)}
     return {"generated_at": now(), "phases": phases, "gates": gates,
             "digest": {"applied": applied_digest, "current": current_digest}}
 

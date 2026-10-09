@@ -62,6 +62,7 @@ export interface LayerRow {
   lastRun: { at: string; changed: number; failed: number } | null
   lastCheck: { at: string; changed: number } | null
   allowedChanges: string | null
+  durationSeconds: number | null
 }
 
 export interface LayerGate {
@@ -69,6 +70,7 @@ export interface LayerGate {
   result: 'pass' | 'fail' | 'unknown'
   at: string | null
   script: string
+  durationSeconds: number | null
 }
 
 export interface LayersResponse {

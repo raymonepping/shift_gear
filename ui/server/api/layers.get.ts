@@ -24,7 +24,7 @@ function parseLayers(raw: unknown): LayersResponse {
       readable: false,
       generatedAt: null,
       phases: [],
-      gates: GATES.map(name => ({ name, result: 'unknown', at: null, script: GATE_SCRIPTS[name]! })),
+      gates: GATES.map(name => ({ name, result: 'unknown', at: null, script: GATE_SCRIPTS[name]!, durationSeconds: null })),
       digest: { applied: null, current: null },
     }
   }
@@ -51,13 +51,14 @@ function parseLayers(raw: unknown): LayersResponse {
         ? { at: iso(chk.at)!, changed: num(chk.changed)! }
         : null,
       allowedChanges: tool === 'ansible' && typeof row.allowed_changes === 'string' ? row.allowed_changes.slice(0, 200) : null,
+      durationSeconds: num(row.durationSeconds),
     }]
   })
   const gatesRaw = rec(root.gates)
   const gates = GATES.map((name) => {
     const g = rec(gatesRaw[name])
     const result: GateResult = g.result === 'pass' ? 'pass' : g.result === 'fail' ? 'fail' : 'unknown'
-    return { name, result, at: iso(g.at), script: GATE_SCRIPTS[name]! }
+    return { name, result, at: iso(g.at), script: GATE_SCRIPTS[name]!, durationSeconds: num(g.durationSeconds) }
   })
   const digest = rec(root.digest ?? root.automation_digest)
   return {

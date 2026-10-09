@@ -14,6 +14,11 @@ const phases = computed(() => data.value?.phases ?? [])
 const gates = computed(() => data.value?.gates ?? [])
 const selected = ref<string | null>(null)
 
+const fmtDuration = (s: number | null | undefined): string => {
+  if (s == null) return '—'
+  return `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`
+}
+
 const ago = (at: string | null | undefined): string => {
   if (!at) return 'never'
   const minutes = Math.max(0, Math.round((Date.now() - new Date(at).getTime()) / 60_000))
@@ -125,7 +130,7 @@ function evidenceSource(row: LayerRow): string {
           <li v-for="gate in gates" :key="gate.name" class="gate">
             <span class="gate-name">{{ gateLabel[gate.name] }}</span>
             <span class="door-chip" :class="gateVerdict(gate).tone"><i aria-hidden="true" />{{ gateVerdict(gate).text }}</span>
-            <span class="gate-age">{{ ago(gate.at) }}</span>
+            <span class="gate-age">{{ ago(gate.at) }}<span v-if="gate.durationSeconds != null" class="gate-dur"> · {{ fmtDuration(gate.durationSeconds) }}</span></span>
             <span class="gate-source">{{ gate.script }}</span>
           </li>
         </ul>
@@ -153,6 +158,7 @@ function evidenceSource(row: LayerRow): string {
                 <template v-if="row.tool === 'terraform'">{{ row.resources ?? '?' }} resources · applied {{ ago(row.lastApply?.at) }}</template>
                 <template v-else>last run {{ ago(row.lastRun?.at) }}</template>
               </span>
+              <span class="layer-dur" aria-label="last run duration">{{ fmtDuration(row.durationSeconds) }}</span>
               <span class="door-chip" :class="verdict(row).tone"><i aria-hidden="true" />{{ verdict(row).text }}</span>
             </button>
             <div v-if="selected === row.phase" :id="`layer-${row.phase}`" class="layer-detail">
@@ -175,12 +181,14 @@ function evidenceSource(row: LayerRow): string {
 .gate-age { grid-column: 1 / -1; font-size: 12px; color: var(--vg-text-muted); font-variant-numeric: tabular-nums; }
 .gate-source { grid-column: 1 / -1; font-family: var(--font-mono); font-size: 11.5px; color: var(--vg-text-muted); }
 .layer-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
-.layer-row { width: 100%; display: grid; grid-template-columns: 28px 92px minmax(90px, 140px) 1fr auto; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--vg-border-subtle); background: var(--vg-well); font: inherit; color: var(--vg-text-secondary); text-align: left; cursor: pointer; transition: background 180ms cubic-bezier(0.16,1,0.3,1); }
+.layer-row { width: 100%; display: grid; grid-template-columns: 28px 92px minmax(90px, 140px) 1fr 52px auto; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--vg-border-subtle); background: var(--vg-well); font: inherit; color: var(--vg-text-secondary); text-align: left; cursor: pointer; transition: background 180ms cubic-bezier(0.16,1,0.3,1); }
 .layer-row:hover { background: var(--vg-hover); }
 .layer-row:focus-visible { outline: 2px solid var(--vg-focus); outline-offset: 2px; }
 .layer-index { font-variant-numeric: tabular-nums; color: var(--vg-text-muted); font-size: 12px; }
 .layer-name { color: var(--vg-text-primary); font-weight: 600; }
 .layer-fact { font-size: 12.5px; color: var(--vg-text-muted); font-variant-numeric: tabular-nums; }
+.layer-dur { font-size: 12px; color: var(--vg-text-muted); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.gate-dur { font-variant-numeric: tabular-nums; }
 .tool-tag { justify-self: start; padding: 2px 9px; border-radius: 100px; font-size: 11.5px; font-weight: 680; border: 1px solid transparent; }
 .tool-tag.terraform { color: var(--vg-hue-indigo); background: color-mix(in srgb, var(--vg-hue-indigo) 10%, transparent); border-color: color-mix(in srgb, var(--vg-hue-indigo) 28%, transparent); }
 .tool-tag.ansible { color: var(--vg-text-secondary); background: color-mix(in srgb, var(--vg-hue-slate) 10%, transparent); border-color: color-mix(in srgb, var(--vg-hue-slate) 28%, transparent); }
@@ -194,6 +202,7 @@ function evidenceSource(row: LayerRow): string {
   .tool-tag { grid-area: t; }
   .layer-name { grid-area: n; }
   .layer-fact { grid-area: f; }
+  .layer-dur { display: none; }
   .layer-row > .door-chip { grid-area: c; justify-self: end; }
 }
 </style>

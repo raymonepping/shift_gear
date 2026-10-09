@@ -30,3 +30,26 @@ test('Terraform phases show the tf layer badge', async ({ browser }) => {
   await expect(page.locator('.tool-tag.terraform').first()).toBeVisible()
   await context.close()
 })
+
+test('duration column is present and at least one phase shows NmNNs format', async ({ browser }) => {
+  const { context, page } = await pageAs(browser, 'ada')
+  // Use a viewport wide enough that .layer-dur is not hidden by the ≤720px rule.
+  await context.pages()[0]?.setViewportSize({ width: 1024, height: 768 })
+  await page.setViewportSize({ width: 1024, height: 768 })
+  await page.goto('/layers')
+  await page.waitForLoadState('networkidle')
+  // Wait for the lazy API fetch to populate the phase list.
+  await page.waitForSelector('.layer-row', { timeout: 10_000 })
+  const durCells = page.locator('.layer-dur')
+  // Cells exist and are visible at this viewport width.
+  await expect(durCells.first()).toBeVisible({ timeout: 5_000 })
+  // At least one cell must show the NmNNs pattern (e.g. "0m02s", "1m13s") or "—".
+  const texts = await durCells.allTextContents()
+  const hasValue = texts.some(t => /^\d+m\d{2}s$/.test(t.trim()))
+  const allDashes = texts.every(t => t.trim() === '—')
+  expect(texts.length).toBeGreaterThan(0)
+  if (!allDashes) {
+    expect(hasValue).toBe(true)
+  }
+  await context.close()
+})

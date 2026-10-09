@@ -89,9 +89,12 @@ unseal: ## Unseal the seal Vault (1 share/threshold 1)
 	$(RUN) unseal
 
 # ── Full lab workflow ─────────────────────────────────────────────────────────
-.PHONY: lab
+.PHONY: lab lab-times
 lab: ## Run all phases in order, then the three gates; on failure prints exact resume command
 	@./scripts/lab.sh
+
+lab-times: ## Print the timing table from the last convergence.json without running anything
+	@./scripts/lab-times.sh
 
 # ── Gates ──────────────────────────────────────────────────────────────────────
 .PHONY: idempotency drift secret-scan boundary rotation-proof
