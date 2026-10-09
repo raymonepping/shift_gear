@@ -178,6 +178,7 @@
     service_accounts_enabled: false
     redirect_uris: "{{ item.redirects }}"
     valid_post_logout_redirect_uris: "{{ item.post_logout_redirects | default([]) }}"
+    backchannel_logout_url: "{{ item.backchannel_logout_url | default(omit) }}"
     web_origins: "{{ item.origins | default([]) }}"
     protocol_mappers:
       - name: groups
@@ -192,7 +193,10 @@
           multivalued: "true"
     state: present
   loop:
-    # Confidential client for the Vault UI OIDC flow
+    # Confidential client for the Vault UI OIDC flow.
+    # backchannel_logout_url: Keycloak POSTs a logout token to our BFF when
+    # the SSO session ends, then immediately redirects to post_logout_redirect_uri
+    # without showing the "Do you want to log out?" browser confirmation page.
     - client_id: vault
       public: false
       secret: "{{ sg_identity_secrets_values.vault_client_secret }}"
@@ -201,6 +205,7 @@
       redirects: "{{ sg_identity_oidc_redirect_uris }}"
       post_logout_redirects:
         - "https://shiftgear.{{ infra_cluster.apps_domain }}/signin"
+      backchannel_logout_url: "https://shiftgear.{{ infra_cluster.apps_domain }}/auth/kc-backchannel-logout"
     # Public client for direct grants in identity-verify (lab only)
     - client_id: sg-cli
       public: true
