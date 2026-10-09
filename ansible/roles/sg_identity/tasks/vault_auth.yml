@@ -149,12 +149,12 @@
             allowed_redirect_uris: "{{ sg_identity_oidc_redirect_uris }}"
             token_ttl: 1800
             token_max_ttl: 7200
-            # Map given_name from the Keycloak profile scope into auth.metadata
-            # so the BFF can display the first name without an extra claim_mappings
-            # lookup. The profile scope provides given_name and family_name; name
-            # is not emitted by Keycloak's default "full name" mapper.
+            # Vault maps JWT-claim name → auth.metadata key. Keep both the
+            # friendly given_name and the OIDC user claim: the latter is the
+            # safe display fallback when a profile has no given name.
             claim_mappings:
-              display_name: given_name
+              given_name: display_name
+              preferred_username: username
           # Lab only: sg-cli id_tokens for identity-verify gate tests.
           jwt/cli:
             role_type: jwt

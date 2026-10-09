@@ -34,7 +34,9 @@ export default defineEventHandler(async (event) => {
   // display_name is mapped from the given_name JWT claim via the OIDC role's
   // claim_mappings (vault_auth.yml). username is the preferred_username claim.
   // Neither metadata?.name nor metadata?.full_name is emitted by this Keycloak config.
-  const username = metadata?.username ?? 'unknown'
+  // Vault JWT/OIDC plugin stores the user_claim value in auth.metadata under
+  // the claim's own name (preferred_username), not a hardcoded "username" key.
+  const username = metadata?.preferred_username ?? metadata?.username ?? 'unknown'
   const displayName = metadata?.display_name ?? username
 
   await createSession(event, {

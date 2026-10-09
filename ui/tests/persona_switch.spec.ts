@@ -27,9 +27,17 @@ test('ada signs out, ben signs in — session is clean between personas', async 
     // ada's display name comes from given_name via claim_mappings
     expect(adaSession?.displayName.toLowerCase()).toContain('ada')
 
-    // Step 2: sign out as ada
+    // Step 2: sign out as ada — POST /auth/logout → Keycloak end-session → /signin
+    // Keycloak may show a "Do you want to log out?" confirmation; click through it.
     await page.click('button.persona-out')
-    await expect(page).toHaveURL(`${BASE}/signin`, { timeout: 10_000 })
+    await page.waitForLoadState('networkidle')
+    if (page.url().includes('keycloak') && page.url().includes('logout')) {
+      const confirmBtn = page.locator('#kc-logout, input[type="submit"], button[type="submit"]').first()
+      if (await confirmBtn.isVisible({ timeout: 3_000 }).catch(() => false)) {
+        await confirmBtn.click()
+      }
+    }
+    await expect(page).toHaveURL(`${BASE}/signin`, { timeout: 20_000 })
     await expect(page.locator('body')).not.toContainText(/page not found/i)
     // Session must be gone
     const logoutCheck = await page.request.get(`${BASE}/api/session`)

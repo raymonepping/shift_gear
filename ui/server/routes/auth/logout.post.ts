@@ -28,8 +28,12 @@ export default defineEventHandler(async (event) => {
     const redirectBack = (cfg.oidcRedirectUri as string)
       ? new URL('/signin', new URL(cfg.oidcRedirectUri as string).origin).href
       : `${getRequestProtocol(event, { xForwardedProto: true })}://${getRequestHost(event)}/signin`
-    const dest = `${keycloakLogoutUrl}?post_logout_redirect_uri=${encodeURIComponent(redirectBack)}`
-    return sendRedirect(event, dest)
+    const destination = new URL(keycloakLogoutUrl)
+    // The configured URL carries client_id=vault. Keycloak requires client_id
+    // or id_token_hint with post_logout_redirect_uri; Vault owns the OIDC
+    // exchange, so this BFF has no ID token to supply.
+    destination.searchParams.set('post_logout_redirect_uri', redirectBack)
+    return sendRedirect(event, destination.href)
   }
   return sendRedirect(event, '/signin')
 })

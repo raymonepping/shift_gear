@@ -22,10 +22,20 @@ test('sign out lands on /signin and invalidates the session', async () => {
     await expect(page).toHaveURL(new RegExp(`^${BASE}/?$`))
 
     // Click Sign out — the form submits POST /auth/logout → Keycloak
-    // end-session → redirect back to /signin.
+    // end-session. Keycloak may show a "Do you want to log out?" confirmation
+    // page; if so, click through it. Then it redirects back to /signin.
     await page.click('button.persona-out')
+    await page.waitForLoadState('networkidle')
 
-    // Wait through the Keycloak redirect chain back to /signin.
+    // Handle optional Keycloak logout confirmation page.
+    if (page.url().includes('keycloak') && page.url().includes('logout')) {
+      const confirmBtn = page.locator('#kc-logout, input[type="submit"], button[type="submit"]').first()
+      if (await confirmBtn.isVisible({ timeout: 3_000 }).catch(() => false)) {
+        await confirmBtn.click()
+      }
+    }
+
+    // Should be on /signin now.
     await expect(page).toHaveURL(`${BASE}/signin`, { timeout: 20_000 })
     await expect(page).not.toHaveTitle(/Page not found/i)
     const bodyText = await page.textContent('body')

@@ -1534,7 +1534,7 @@ resource "kubernetes_deployment" "ui" {
           }
           env {
             name  = "NUXT_KEYCLOAK_LOGOUT_URL"
-            value = "https://keycloak.${local.apps_domain}/realms/shift-gear/protocol/openid-connect/logout"
+            value = "https://keycloak.${local.apps_domain}/realms/shift-gear/protocol/openid-connect/logout?client_id=vault"
           }
           env {
             name  = "NUXT_EVIDENCE_DIR"
