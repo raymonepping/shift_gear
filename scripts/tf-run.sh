@@ -113,6 +113,26 @@ apply)
   terraform -chdir="${dir}" apply -input=false -auto-approve "$@"
   record last_apply success
   write_outputs
+  # Post-apply plan (Option A): proves the apply left no residual drift and
+  # populates last_plan so the Layers page shows "plan empty" right after
+  # make lab, not "not checked". Uses -out=/dev/null to avoid a .tfplan file.
+  set +e
+  terraform -chdir="${dir}" plan -input=false -detailed-exitcode -lock=false -out=/dev/null "$@"
+  _plan_rc=$?
+  set -e
+  case "${_plan_rc}" in
+  0)
+    record last_plan clean
+    ;;
+  2)
+    record last_plan drift
+    printf '\033[33mWARN:\033[0m terraform/%s post-apply plan is not empty — run make drift\n' "${root}" >&2
+    ;;
+  *)
+    record last_plan error
+    die "terraform/${root}: post-apply plan failed (rc=${_plan_rc})"
+    ;;
+  esac
   ;;
 destroy)
   terraform -chdir="${dir}" destroy -input=false "$@"
