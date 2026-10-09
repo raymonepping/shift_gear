@@ -235,3 +235,4 @@ playwright-report/
 .output/
 .cache/
 .claude/
+.codex/
