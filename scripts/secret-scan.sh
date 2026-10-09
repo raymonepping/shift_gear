@@ -88,7 +88,7 @@ done
 
 # Secret-shaped patterns: Vault service/batch/recovery tokens, the licence
 # header, PEM private keys with a base64 body (whole-file match, -z).
-patterns=('hv[sbr]\.[A-Za-z0-9_-]{20,}' '02MV4UU43BK5' '-----BEGIN [A-Z ]*PRIVATE KEY-----[[:space:]]+[A-Za-z0-9+/=]{40}')
+patterns=('hv[sbr]\.[A-Za-z0-9_-]{20,}' '02MV4UU43BK[5]' '-----BEGIN [A-Z ]*PRIVATE KEY-----[[:space:]]+[A-Za-z0-9+/=]{40}')
 for pattern in "${patterns[@]}"; do
   if files="$(grep -rlzE -- "${pattern}" "${targets[@]}" 2>/dev/null)"; then
     printf 'LEAK: pattern %s found in %s\n' "${pattern%%[\\\[]*}…" "${files//$'\n'/, }" >&2

@@ -171,23 +171,24 @@ make vso-status                             # confirm lastSyncTime is recent
 ## TLS certificate verify failed
 
 **Symptom:** `curl: (60) SSL certificate problem: unable to get local issuer certificate` when
-accessing `https://vault.apps-crc.testing`.
+accessing `https://vault.apps-crc.testing` or `https://shiftgear.apps-crc.testing`.
 
-**Cause:** The project CA (`ca.pem`) is not trusted by the system or by `curl`'s CA bundle.
+**Cause:** The project CA (`.secrets/tls/pub/ca.pem`) is not trusted by macOS.
 
-**Fix:**
+**Fix — browser:**
 ```sh
-# For curl commands:
-curl --cacert .secrets/tls/pub/ca.pem https://vault.apps-crc.testing/v1/sys/health
-
-# For browser: trust the CA
-# macOS:
-security add-trusted-cert -d -r trustRoot -k ~/Library/Keychains/login.keychain-db \
-  .secrets/tls/pub/ca.pem
+make trust
 ```
 
-All `scripts/` that call Vault use `--cacert "${CA_FILE}"` where `CA_FILE` points to
-`.secrets/tls/pub/ca.pem`. If this file is missing, run `make prepare` to regenerate.
+Adds the CA to the System keychain. Quit and reopen Chrome for it to take effect.
+
+**Fix — curl (without adding to keychain):**
+```sh
+curl --cacert .secrets/tls/pub/ca.pem https://vault.apps-crc.testing/v1/sys/health
+```
+
+All `scripts/` that call Vault use `--cacert "${CA_FILE}"` pointing to `.secrets/tls/pub/ca.pem`.
+If this file is missing, run `make prepare` to regenerate it.
 
 ---
 

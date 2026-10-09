@@ -102,7 +102,20 @@ Expected output ends with `verify-stack passed` and no `✗` rows.
 
 ---
 
-## 6. First sign-in
+## 6. Trust the CA (once)
+
+```sh
+make trust
+```
+
+Adds `.secrets/tls/pub/ca.pem` to the macOS System keychain. Chrome, Safari, and `curl` all
+accept the cert after this — no more browser warnings. Quit and reopen Chrome for it to take effect.
+
+Remove it later with `make untrust`.
+
+---
+
+## 7. First sign-in
 
 Get `ada`'s password:
 
@@ -110,17 +123,15 @@ Get `ada`'s password:
 make identity-show-user PERSON=ada
 ```
 
-Open `https://vault.apps-crc.testing` in your browser. Trust the project CA
-(`.secrets/tls/pub/ca.pem`) or add it to your keychain.
+Open `https://shiftgear.apps-crc.testing` for the Shift Gear console. Sign in with username
+`ada` — Keycloak handles the redirect. On return, `ada`'s token carries policies
+`sg-engineer` and `sg-staff`.
 
-Sign in with method **OIDC** and username `ada`. You will be redirected to Keycloak.
-On return, Vault shows `ada`'s token policies: `sg-engineer`, `sg-staff`.
-
-Open `https://sg-ui.apps-crc.testing` for the Shift Gear console.
+For the Vault UI directly: `https://vault.apps-crc.testing` → **Sign in with OIDC**.
 
 ---
 
-## 7. `make identity-show-user`
+## 8. `make identity-show-user`
 
 Print any user's password from Vault KV:
 
@@ -133,7 +144,7 @@ make identity-show-user PERSON=finn
 
 ---
 
-## 8. Second `make lab` (idempotency proof)
+## 9. Second `make lab` (idempotency proof)
 
 ```sh
 make lab

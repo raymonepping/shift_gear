@@ -42,6 +42,9 @@
 | `make validate` | Run only `ansible validate` |
 | `make unseal` | Unseal the seal Vault (1 share/threshold 1) |
 | `make identity-show-user PERSON=ada` | Print person's password from Vault KV |
+| `make trust` | Add the lab CA to the macOS System keychain (sudo) |
+| `make untrust` | Remove the lab CA from the macOS System keychain (sudo) |
+| `make trust-status` | Is the CA trusted? Does macOS accept shiftgear.apps-crc.testing? |
 | `make ui-test` | Playwright + axe WCAG 2.1 AA gate |
 | `make ui-screens` | Screenshot every screen → `docs/screenshots/` |
 | `make ui-check` | Nuxt typecheck + ESLint |

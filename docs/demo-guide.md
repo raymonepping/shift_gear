@@ -1,8 +1,10 @@
 # Demo guide
 
 Two run sheets: a 10-minute deep dive and a 5-minute show. Both assume `make lab` has
-already converged and `make verify` is green. Open a browser tab on
-`https://vault.apps-crc.testing` and `https://sg-ui.apps-crc.testing` before starting.
+already converged and `make verify` is green.
+
+Before starting: run `make trust` so the browser accepts the project CA without warnings.
+Open a tab on `https://vault.apps-crc.testing` and `https://shiftgear.apps-crc.testing`.
 
 ---
 
@@ -22,7 +24,7 @@ ingress controller to the Vault pod. No load balancer required.
 
 ### 1:00 — Fleet page
 
-Open `https://sg-ui.apps-crc.testing`. The Fleet page appears.
+Open `https://shiftgear.apps-crc.testing`. The Fleet page appears.
 
 **What to say:** The console pulls live data from the OpenShift API (through the Shift Gear
 API's BFF). The tiles show pod count, CPU and memory totals for the workloads Terraform root.

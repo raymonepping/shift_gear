@@ -1,10 +1,6 @@
 # Security model
 
----
-
-## Overview
-
-Shift Gear applies defence-in-depth at four layers:
+Defence-in-depth at four layers:
 
 1. **Vault policy** — what each bootstrap token may read/write/create.
 2. **Kubernetes RBAC and NetworkPolicy** — what each pod may reach.
@@ -40,8 +36,8 @@ Shift Gear applies defence-in-depth at four layers:
 | `seal` | AppRole role names, transit key names, policy names | Secret-ids, role-ids, unseal keys |
 | `platform` | Mount names, policy HCL text, token role specs | KV data, auth method credentials, DB passwords |
 
-**Secret values are never in Terraform state.** Terraform declares structure (mount paths, role
-names, policy text); Ansible writes values (`no_log: true`).
+Terraform declares structure (mount paths, role names, policy text). Ansible writes values
+(`no_log: true`). Secret values are never in state.
 
 ---
 
@@ -54,9 +50,8 @@ names, policy text); Ansible writes values (`no_log: true`).
 | `sg-tf-platform` | ansible bootstrap | tf platform | `sys/mounts`, `sys/policies/acl`, `sys/auth` (read), token roles, audit |
 | `sg-ansible-platform` | ansible bootstrap | ansible configure, identity, ux | `sys/auth`, `kv/data`, `database/config`, `pki-int`, identity |
 
-Root token: **break-glass only**. It is written to `.secrets/` with mode 0600 and is not
-used by any script in normal operation. Rotation: `vault token create -orphan -policy=root`
-from the break-glass token, then revoke the old root.
+Root token: break-glass only. Written to `.secrets/` with mode 0600. Not used by any script in
+normal operation. To rotate: `vault token create -orphan -policy=root`, then revoke the old root.
 
 Each token has a 72-hour TTL and is renewable. `lab.sh` renews them before each run if
 less than 24 hours remain.
@@ -86,12 +81,11 @@ a cluster Vault token — it only authenticates to the seal Vault.
 
 ## VSO: workloads hold nothing
 
-The Vault Secrets Operator authenticates using **Kubernetes auth** with the projected SA token of
-the `vso-workloads` service account. No Vault token is stored in any Secret, ConfigMap,
-or environment variable.
+VSO authenticates with Kubernetes auth using the projected SA token of the `vso-workloads` SA.
+No Vault token in any Secret, ConfigMap, or environment variable.
 
 The resulting Kubernetes `Secret` objects (`app-config`, `db-creds`) are mounted read-only into
-the workload pods. The pods do not have a Vault address in their environment.
+the workload pods. No Vault address in their environment.
 
 `make verify` checks that no pod in `sg-workloads` or `sg-app` has a `VAULT_*` environment
 variable.

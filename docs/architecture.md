@@ -1,16 +1,12 @@
 # Architecture
 
----
+Shift Gear runs on a single OpenShift Local (CRC) instance. Three concerns, three tools:
 
-## Overview
-
-Shift Gear runs on a single OpenShift Local (CRC) instance. The design separates three concerns:
-
-- **Terraform** — owns everything with an API and a lifecycle (Kubernetes objects, Helm releases,
-  Vault structure: namespaces, mounts, policies, token roles, audit devices).
-- **Ansible** — owns everything with an order and a moment (init, unseal, credentials, people,
-  seeds, proofs). Never creates infrastructure; always configures it after Terraform declares it.
-- **Vault Secrets Operator** — owns runtime secret delivery to workload pods. No Vault token in
+- **Terraform** — everything with an API and a lifecycle: Kubernetes objects, Helm releases,
+  Vault structure (namespaces, mounts, policies, token roles, audit devices).
+- **Ansible** — everything with an order and a moment: init, unseal, credentials, people,
+  seeds, proofs. Never creates infrastructure; configures it after Terraform declares it.
+- **Vault Secrets Operator** — runtime secret delivery to workload pods. No Vault token in
   any pod.
 
 ---
@@ -26,8 +22,8 @@ Shift Gear runs on a single OpenShift Local (CRC) instance. The design separates
 | `sg-app` | tf foundation | agent-demo (Vault Agent sidecar), Shift Gear API + UI |
 | `openshift-operators` | tf foundation | Vault Secrets Operator (CSV) |
 
-All namespaces are created by `terraform/foundation/`. The VSO Subscription is also in
-`openshift-operators`; `sg-vault` does not include the operator — it is cluster-scoped.
+All namespaces are created by `terraform/foundation/`. The VSO Subscription is in
+`openshift-operators`; the operator is cluster-scoped.
 
 ---
 
@@ -74,9 +70,8 @@ All three are in `sg-vault`. Traffic reaches them through a single Route
 Kubernetes `Service` in `ClusterIP` mode — the load balancer routes to the active node directly
 (Vault redirects standbys).
 
-The HA enterprise namespace is `shift-gear`. All mounts, policies, auth methods, and secrets live
-in this namespace. The `X-Vault-Namespace: shift-gear` header is set on every Ansible task and
-every Terraform provider block.
+The enterprise namespace is `shift-gear`. All mounts, policies, auth methods, and secrets live
+there. Every Ansible task and every Terraform provider block sets `X-Vault-Namespace: shift-gear`.
 
 ---
 

@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 # scripts/trust.sh — make the Mac (Chrome, Safari, curl via the keychain)
-# trust the Shift Gear lab CA so that shiftgear.apps-crc.testing, vault,
-# and keycloak load without certificate warnings.
+# trust the Shift Gear lab CA so that the console (shiftgear.<apps domain>),
+# vault and keycloak load without certificate warnings.
 #
 #   trust.sh trust     add .secrets/tls/pub/ca.pem to System keychain as trusted root (sudo)
 #   trust.sh untrust   remove it again (sudo)
-#   trust.sh status    is the CA trusted? does macOS accept shiftgear.apps-crc.testing?
+#   trust.sh status    is the CA trusted? does macOS accept the console's certificate?
 set -euo pipefail
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "${SCRIPT_DIR}/common.sh"
 require_cmd security
 require_cmd openssl
+require_cmd jq
 
 KEYCHAIN=/Library/Keychains/System.keychain
 CA="${SECRETS_DIR}/tls/pub/ca.pem"
@@ -31,7 +32,14 @@ trusted() {
 }
 
 check_front_door() {
-  local host="shiftgear.apps-crc.testing"
+  local apps_domain host
+  # The apps domain comes from the contract, never a literal (lesson 19).
+  apps_domain="$(jq -r '.cluster.apps_domain // empty' "${BUILD_DIR}/terraform/infra.json" 2>/dev/null || true)"
+  if [[ -z "${apps_domain}" ]]; then
+    printf '\033[33m!!\033[0m no apps_domain in .build/terraform/infra.json — run make infra\n' >&2
+    return 0
+  fi
+  host="shiftgear.${apps_domain}"
   # Quick TLS handshake; curl uses the keychain on macOS so this reflects
   # whether the CA is actually trusted by the OS.
   if curl --max-time 5 -sS "https://${host}/api/health" -o /dev/null 2>/dev/null; then

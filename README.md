@@ -73,7 +73,13 @@ Thirteen phases, interleaved Terraform and Ansible:
 | Vault UI | `https://vault.apps-crc.testing` |
 | Vault Seal UI | `https://vault-seal.apps-crc.testing` |
 | Keycloak admin | `https://keycloak.apps-crc.testing/admin` |
-| Shift Gear console | `https://sg-ui.apps-crc.testing` |
+| Shift Gear console | `https://shiftgear.apps-crc.testing` |
+
+Trust the project CA once so the browser accepts all four URLs without warnings:
+
+```sh
+make trust
+```
 
 Sign in as `ada` (engineer) with password from `make identity-show-user PERSON=ada`.
 
@@ -99,6 +105,7 @@ Key targets:
 | `make identity-verify` | Every persona logs in and receives exactly their policies |
 | `make wl-a-rotate` | Write new KV version; VSO syncs within ~30 s; workload-a rolls |
 | `make vso-status` | VSO CRD sync status and workload pod states |
+| `make trust` / `make untrust` | Add / remove the lab CA from the macOS System keychain |
 | `make down` / `make up` | Graceful scale-down / scale-up without losing PVCs |
 | `make crc-reset && make lab` | Full destroy and rebuild from nothing |
 
