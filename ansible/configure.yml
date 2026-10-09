@@ -1,0 +1,35 @@
+---
+# ansible/configure.yml — Phase: ansible configure
+# Part 1 (Prompt 05): postgres-admin secret, sg-ca-secret, kubernetes auth,
+#   database connection + demo-reader role, rotate-root, app-config KV seed.
+# Part 2 (Prompt 06): AppRole auth, cert auth, agent demo, socket audit.
+# Token: sg-ansible-platform (shift-gear namespace)
+
+- name: Configure — Vault-side setup for VSO workloads and auth methods
+  hosts: localhost
+  gather_facts: false
+
+  pre_tasks:
+    - name: Load infra contract
+      ansible.builtin.set_fact:
+        sg_tf_infra_contract: "{{ lookup('file', playbook_dir + '/../.build/terraform/infra.json') | from_json }}"
+      changed_when: false
+
+    - name: Set infra_cluster alias
+      ansible.builtin.set_fact:
+        infra_cluster: "{{ sg_tf_infra_contract.cluster }}"
+      changed_when: false
+
+    - name: Read sg-ansible-platform bootstrap token
+      ansible.builtin.slurp:
+        src: "{{ playbook_dir }}/../.secrets/tokens/ansible-platform"
+      register: _sg_token_raw
+      no_log: true
+
+    - name: Set sg_vault_token fact
+      ansible.builtin.set_fact:
+        sg_vault_token: "{{ _sg_token_raw.content | b64decode | trim }}"
+      no_log: true
+
+  roles:
+    - role: sg_configure

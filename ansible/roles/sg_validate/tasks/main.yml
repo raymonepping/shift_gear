@@ -1,0 +1,284 @@
+---
+# ansible/roles/sg_validate/tasks/main.yml
+# Read-only end-to-end validation. Every check produces a row
+# {id, label, result, detail}. Written to .build/validation.json
+# BEFORE the play asserts pass/fail (so a failed run still produces the file).
+
+- name: Initialise validation state
+  ansible.builtin.set_fact:
+    sg_validate_rows: []
+    sg_validate_token: "{{ sg_vault_token }}"
+  no_log: true
+
+# ── Vault cluster health ──────────────────────────────────────────────────────
+
+- name: Read Vault cluster health
+  ansible.builtin.uri:
+    url: "{{ sg_validate_vault_addr }}/v1/sys/health"
+    ca_path: "{{ sg_validate_vault_ca }}"
+    headers:
+      X-Vault-Token: "{{ sg_validate_token }}"
+    status_code: [200, 429, 472, 473, 501, 503]
+  check_mode: false
+  register: sg_validate_health
+  no_log: true
+
+- name: Record health checks
+  ansible.builtin.set_fact:
+    sg_validate_rows: >-
+      {{ sg_validate_rows + [
+           {'id': 'vault-initialized',
+            'label': 'Vault cluster initialized',
+            'result': 'pass' if (sg_validate_health.json.initialized | default(false)) else 'fail',
+            'detail': 'initialized=' ~ (sg_validate_health.json.initialized | default(false))},
+           {'id': 'vault-unsealed',
+            'label': 'Vault cluster unsealed',
+            'result': 'pass' if not (sg_validate_health.json.sealed | default(true)) else 'fail',
+            'detail': 'sealed=' ~ (sg_validate_health.json.sealed | default(true))},
+           {'id': 'vault-version',
+            'label': 'Vault version matches expected (' ~ sg_validate_vault_version ~ ')',
+            'result': 'pass' if (sg_validate_vault_version in (sg_validate_health.json.version | default(''))) else 'warn',
+            'detail': 'version=' ~ (sg_validate_health.json.version | default('unknown'))}] }}
+
+# ── Raft HA status ────────────────────────────────────────────────────────────
+
+- name: Read Vault HA status
+  ansible.builtin.uri:
+    url: "{{ sg_validate_vault_addr }}/v1/sys/ha-status"
+    ca_path: "{{ sg_validate_vault_ca }}"
+    headers:
+      X-Vault-Token: "{{ sg_validate_token }}"
+    status_code: [200]
+  check_mode: false
+  register: sg_validate_ha
+  no_log: true
+
+- name: Record HA checks
+  ansible.builtin.set_fact:
+    sg_validate_rows: >-
+      {{ sg_validate_rows + [
+           {'id': 'vault-ha-active',
+            'label': 'Vault HA has an active node',
+            'result': 'pass' if (sg_validate_ha.json.nodes | default([])
+                                 | selectattr('active_node', 'defined')
+                                 | selectattr('active_node', 'equalto', true)
+                                 | list | length == 1) else 'fail',
+            'detail': 'nodes=' ~ (sg_validate_ha.json.nodes | default([]) | length | string)}] }}
+
+# ── Platform namespace and mounts ─────────────────────────────────────────────
+
+- name: Read Vault mounts in shift-gear namespace
+  ansible.builtin.uri:
+    url: "{{ sg_validate_vault_addr }}/v1/sys/mounts"
+    ca_path: "{{ sg_validate_vault_ca }}"
+    headers:
+      X-Vault-Token: "{{ sg_validate_token }}"
+      X-Vault-Namespace: "shift-gear"
+    status_code: [200]
+  check_mode: false
+  register: sg_validate_mounts
+  no_log: true
+
+- name: Record mount checks
+  ansible.builtin.set_fact:
+    sg_validate_rows: >-
+      {{ sg_validate_rows + [
+           {'id': 'mount-' ~ item.path | replace('/', ''),
+            'label': 'Mount ' ~ item.path ~ ' (type ' ~ item.type ~ ') exists in shift-gear',
+            'result': 'pass' if item.path in (sg_validate_mounts.json.data | default({})) else 'fail',
+            'detail': 'found' if item.path in (sg_validate_mounts.json.data | default({})) else 'absent'}] }}
+  loop: "{{ sg_validate_platform_mounts }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+# ── Platform ACL policies ─────────────────────────────────────────────────────
+
+- name: Read platform policies
+  ansible.builtin.uri:
+    url: "{{ sg_validate_vault_addr }}/v1/sys/policies/acl/{{ item }}"
+    ca_path: "{{ sg_validate_vault_ca }}"
+    headers:
+      X-Vault-Token: "{{ sg_validate_token }}"
+      X-Vault-Namespace: "shift-gear"
+    status_code: [200, 404]
+  check_mode: false
+  loop: "{{ sg_validate_platform_policies }}"
+  register: sg_validate_policy_reads
+  no_log: true
+
+- name: Record policy checks
+  ansible.builtin.set_fact:
+    sg_validate_rows: >-
+      {{ sg_validate_rows + [
+           {'id': 'policy-' ~ item.item,
+            'label': 'Policy ' ~ item.item ~ ' exists in shift-gear',
+            'result': 'pass' if item.status == 200 else 'fail',
+            'detail': 'HTTP ' ~ item.status}] }}
+  loop: "{{ sg_validate_policy_reads.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  no_log: true
+
+# ── Vault seal chain ──────────────────────────────────────────────────────────
+
+- name: Read seal Vault health
+  ansible.builtin.uri:
+    url: "{{ sg_validate_vault_seal_addr }}/v1/sys/health"
+    ca_path: "{{ sg_validate_vault_ca }}"
+    status_code: [200, 429]
+  check_mode: false
+  register: sg_validate_seal_health
+  no_log: true
+
+- name: Record seal Vault health
+  ansible.builtin.set_fact:
+    sg_validate_rows: >-
+      {{ sg_validate_rows + [
+           {'id': 'seal-vault-healthy',
+            'label': 'Seal Vault initialized and unsealed',
+            'result': 'pass' if (sg_validate_seal_health.json.initialized | default(false))
+                               and not (sg_validate_seal_health.json.sealed | default(true)) else 'fail',
+            'detail': 'init=' ~ (sg_validate_seal_health.json.initialized | default(false))
+                      ~ ' sealed=' ~ (sg_validate_seal_health.json.sealed | default(true))}] }}
+
+# ── Vault Route TLS ───────────────────────────────────────────────────────────
+
+- name: Check Vault UI endpoint (200 or redirect)
+  ansible.builtin.uri:
+    url: "{{ sg_validate_vault_addr }}/ui/"
+    ca_path: "{{ sg_validate_vault_ca }}"
+    follow_redirects: all
+    status_code: [200, 301, 307]
+  check_mode: false
+  register: sg_validate_vault_ui
+  no_log: true
+
+- name: Record Vault UI check
+  ansible.builtin.set_fact:
+    sg_validate_rows: >-
+      {{ sg_validate_rows + [
+           {'id': 'vault-ui-route',
+            'label': 'Vault UI Route answers via TLS',
+            'result': 'pass' if sg_validate_vault_ui.status in [200, 301, 307] else 'fail',
+            'detail': 'HTTP ' ~ sg_validate_vault_ui.status}] }}
+
+# ── Keycloak Route ────────────────────────────────────────────────────────────
+
+- name: Check Keycloak OIDC discovery endpoint
+  ansible.builtin.uri:
+    url: "{{ sg_validate_keycloak_url }}/realms/shift-gear/.well-known/openid-configuration"
+    ca_path: "{{ playbook_dir }}/../{{ infra_cluster.ingress_ca_path }}"   # Keycloak sits behind a reencrypt Route: the router's CA
+    status_code: [200]
+  check_mode: false
+  register: sg_validate_kc_discovery
+  no_log: true
+
+- name: Record Keycloak discovery check
+  ansible.builtin.set_fact:
+    sg_validate_rows: >-
+      {{ sg_validate_rows + [
+           {'id': 'keycloak-oidc-discovery',
+            'label': 'Keycloak OIDC discovery endpoint answers (shift-gear realm)',
+            'result': 'pass' if sg_validate_kc_discovery.status == 200 else 'fail',
+            'detail': 'HTTP ' ~ sg_validate_kc_discovery.status}] }}
+
+# ── VSO sync ─────────────────────────────────────────────────────────────────
+
+- name: Check app-config VSO Secret exists in sg-workloads
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ sg_validate_kubeconfig }}"
+    api_version: v1
+    kind: Secret
+    name: app-config
+    namespace: sg-workloads
+  check_mode: false
+  register: sg_validate_app_cfg_secret
+  no_log: true
+
+- name: Check db-creds VSO Secret exists in sg-workloads
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ sg_validate_kubeconfig }}"
+    api_version: v1
+    kind: Secret
+    name: db-creds
+    namespace: sg-workloads
+  check_mode: false
+  register: sg_validate_db_creds_secret
+  no_log: true
+
+- name: Record VSO secret sync checks
+  ansible.builtin.set_fact:
+    sg_validate_rows: >-
+      {{ sg_validate_rows + [
+           {'id': 'vso-app-config',
+            'label': 'VSO synced app-config Secret in sg-workloads',
+            'result': 'pass' if sg_validate_app_cfg_secret.resources | length > 0 else 'fail',
+            'detail': 'present' if sg_validate_app_cfg_secret.resources | length > 0 else 'absent'},
+           {'id': 'vso-db-creds',
+            'label': 'VSO synced db-creds Secret in sg-workloads',
+            'result': 'pass' if sg_validate_db_creds_secret.resources | length > 0 else 'fail',
+            'detail': 'present' if sg_validate_db_creds_secret.resources | length > 0 else 'absent'}] }}
+
+# ── Identity verify report ────────────────────────────────────────────────────
+
+- name: Read identity verify report if present
+  ansible.builtin.set_fact:
+    sg_validate_id_report: >-
+      {{ lookup('file', playbook_dir + '/../.build/identity-verify.json', errors='ignore')
+         | default('[]', true) | from_json }}
+  changed_when: false
+
+- name: Re-check identity rows from saved report
+  ansible.builtin.set_fact:
+    sg_validate_rows: >-
+      {{ sg_validate_rows + [
+           {'id': 'identity-' ~ item.id,
+            'label': 'Identity verify: ' ~ item.label,
+            'result': item.status,
+            'detail': item.detail}] }}
+  loop: "{{ sg_validate_id_report }}"
+  loop_control:
+    label: "{{ item.id }}"
+
+# ── Write report (before asserting) ──────────────────────────────────────────
+
+- name: Ensure .build/gates directory exists
+  ansible.builtin.file:
+    path: "{{ sg_validate_gates_dir }}"
+    state: directory
+    mode: "0755"
+  changed_when: false
+
+- name: Build final report structure
+  ansible.builtin.set_fact:
+    sg_validate_report:
+      rows: "{{ sg_validate_rows }}"
+      pass_count: "{{ sg_validate_rows | selectattr('result', 'equalto', 'pass') | list | length }}"
+      fail_count: "{{ sg_validate_rows | selectattr('result', 'equalto', 'fail') | list | length }}"
+      warn_count: "{{ sg_validate_rows | selectattr('result', 'equalto', 'warn') | list | length }}"
+      generated_at: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+
+- name: Write validation report to .build/validation.json
+  ansible.builtin.copy:
+    content: "{{ sg_validate_report | to_nice_json }}"
+    dest: "{{ sg_validate_report_path }}"
+    mode: "0644"
+  changed_when: false
+
+- name: Write validation report to .build/gates/validation.json
+  ansible.builtin.copy:
+    content: "{{ sg_validate_report | to_nice_json }}"
+    dest: "{{ sg_validate_gates_dir }}/validation.json"
+    mode: "0644"
+  changed_when: false
+
+# ── Assert pass (after writing the report) ───────────────────────────────────
+
+- name: Assert all validation checks pass
+  ansible.builtin.assert:
+    that: sg_validate_rows | selectattr('result', 'equalto', 'fail') | list | length == 0
+    fail_msg: >-
+      Validation failures ({{ sg_validate_rows | selectattr('result', 'equalto', 'fail') | list | length }}):
+      {{ sg_validate_rows | selectattr('result', 'equalto', 'fail') | list | map(attribute='id') | join(', ') }}
+      — see .build/validation.json
+    quiet: true

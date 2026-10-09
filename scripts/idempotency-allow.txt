@@ -1,0 +1,4 @@
+# Phases allowed to report changed>0 on a real re-run, each with a documented
+# reason. Read by scripts/idempotency.sh. Format: <phase>  <reason>
+# Keep this list to deliberate, explained changes only.
+ux  evidence ConfigMap sync: .build/*.json is regenerated on every run

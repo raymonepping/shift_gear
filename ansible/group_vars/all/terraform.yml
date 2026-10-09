@@ -1,0 +1,21 @@
+---
+# ansible/group_vars/all/terraform.yml
+# Default values for Terraform output variables.
+# The actual values are loaded by preamble.yml at play time.
+# These defaults prevent variable-undefined errors during syntax checks.
+sg_tf_infra: {}
+sg_tf_foundation: {}
+sg_tf_workloads: {}
+sg_tf_seal: {}
+sg_tf_platform: {}
+
+# infra_cluster is the canonical alias used by all roles.
+# Populated from sg_tf_infra_contract.cluster by preamble.yml.
+# The default here prevents undefined-variable errors during syntax checks.
+infra_cluster:
+  api_url: ""
+  apps_domain: ""
+  pod_cidr: ""
+  kubeconfig_path: ".secrets/kube/config"
+  ingress_ca_path: ".secrets/kube/ingress-ca.pem"
+  registry_host: ""

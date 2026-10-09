@@ -1,0 +1,43 @@
+---
+# ansible/roles/sg_validate/vars/main.yml
+# Variables for the sg_validate role.
+
+sg_validate_vault_addr: "https://vault.{{ infra_cluster.apps_domain }}"
+sg_validate_vault_seal_addr: "https://vault-seal.{{ infra_cluster.apps_domain }}"
+sg_validate_keycloak_url: "https://keycloak.{{ infra_cluster.apps_domain }}"
+sg_validate_vault_ca: "{{ playbook_dir }}/../.secrets/tls/pub/ca.pem"
+sg_validate_report_path: "{{ playbook_dir }}/../.build/validation.json"
+sg_validate_gates_dir: "{{ playbook_dir }}/../.build/gates"
+
+# Expected Vault cluster version
+sg_validate_vault_version: "2.1.0+ent"
+
+# Expected bootstrap policies per token file
+sg_validate_expected_policies:
+  seal: ["sg-ansible-seal"]
+  platform: ["sg-ansible-platform"]
+
+# Platform mounts that must exist in shift-gear
+sg_validate_platform_mounts:
+  - { path: "kv/", type: "kv" }
+  - { path: "transit/", type: "transit" }
+  - { path: "pki/", type: "pki" }
+  - { path: "pki-int/", type: "pki" }
+  - { path: "database/", type: "database" }
+
+# Platform ACL policies that must exist
+sg_validate_platform_policies:
+  - sg-engineer
+  - sg-operator
+  - sg-approver
+  - sg-auditor
+  - sg-vso
+  - sg-api
+  - sg-agent-demo
+
+# VSO resources that must be synced
+sg_validate_vso_resources:
+  - { kind: VaultStaticSecret, name: app-config, ns: sg-workloads }
+  - { kind: VaultDynamicSecret, name: db-creds, ns: sg-workloads }
+
+sg_validate_kubeconfig: "{{ playbook_dir }}/../{{ infra_cluster.kubeconfig_path }}"

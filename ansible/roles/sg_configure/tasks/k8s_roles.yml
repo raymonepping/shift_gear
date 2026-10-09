@@ -1,0 +1,61 @@
+---
+# ansible/roles/sg_configure/tasks/k8s_roles.yml
+# Add sg-api and sg-agent-demo Kubernetes auth roles to the existing mount.
+# These roles serve the API server (sg-app/sg-api) and the Vault Agent
+# sidecar demo (sg-app/sg-agent-demo), both of which run as different
+# ServiceAccounts in sg-app.
+
+- name: Configure additional Kubernetes auth roles
+  module_defaults:
+    ansible.builtin.uri:
+      ca_path: "{{ sg_configure_vault_ca }}"
+      headers:
+        X-Vault-Token: "{{ sg_vault_token }}"
+        X-Vault-Namespace: "shift-gear"
+  no_log: true
+  block:
+    - name: Define additional Kubernetes auth roles
+      ansible.builtin.set_fact:
+        sg_configure_k8s_extra_roles:
+          sg-api:
+            bound_service_account_names: ["sg-api"]
+            bound_service_account_namespaces: ["sg-app"]
+            policies: ["sg-api"]
+            token_ttl: 600
+            token_max_ttl: 1800
+          sg-agent-demo:
+            bound_service_account_names: ["sg-agent-demo"]
+            bound_service_account_namespaces: ["sg-app"]
+            policies: ["sg-agent-demo"]
+            token_ttl: 900
+            token_max_ttl: 1800
+
+    - name: Read existing Kubernetes auth roles
+      ansible.builtin.uri:
+        url: "{{ sg_configure_vault_addr }}/v1/auth/{{ sg_configure_k8s_auth_mount }}/role/{{ item.key }}"
+        status_code: [200, 404]
+      check_mode: false
+      loop: "{{ sg_configure_k8s_extra_roles | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      register: sg_configure_k8s_role_reads
+
+    - name: Write Kubernetes auth roles when absent or changed
+      ansible.builtin.uri:
+        url: "{{ sg_configure_vault_addr }}/v1/auth/{{ sg_configure_k8s_auth_mount }}/role/{{ item.item.key }}"
+        method: POST
+        body_format: json
+        body: "{{ sg_configure_k8s_extra_roles[item.item.key] }}"
+        status_code: [200, 204]
+      changed_when: true
+      loop: "{{ sg_configure_k8s_role_reads.results }}"
+      loop_control:
+        label: "{{ item.item.key }}"
+      when: >-
+        item.status == 404 or
+        (item.json.data.policies | default([]) | sort)
+          != (sg_configure_k8s_extra_roles[item.item.key].policies | sort) or
+        (item.json.data.bound_service_account_names | default([]) | sort)
+          != (sg_configure_k8s_extra_roles[item.item.key].bound_service_account_names | sort) or
+        (item.json.data.bound_service_account_namespaces | default([]) | sort)
+          != (sg_configure_k8s_extra_roles[item.item.key].bound_service_account_namespaces | sort)

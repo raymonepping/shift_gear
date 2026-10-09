@@ -1,0 +1,167 @@
+# deploy/vault/values.yaml
+# Helm values — main Vault Enterprise cluster (release `vault`, namespace sg-vault).
+#
+# 3 Raft nodes, transit-auto-unsealed through the seal agent (not the seal
+# Vault directly). The seal agent runs in sg-vault-seal and presents an mTLS
+# listener; each Vault pod authenticates with its own client certificate.
+# No VAULT_TOKEN is set; no seal token exists anywhere.
+#
+# Lessons applied:
+#   - global.openshift: true
+#   - api_addr uses $(POD_IP) — Kubernetes $(VAR) expansion is order-dependent
+#     (lesson 10 from red_doors); clusterAddr uses $(HOSTNAME) for Raft peers
+#   - wait-for-seal-vault init container waits for the seal AGENT (lesson 11)
+#   - OnDelete update strategy — controlled roll: standbys first, leader last
+#   - affinity cleared — single-node CRC cannot schedule three pods with the
+#     chart's default kubernetes.io/hostname anti-affinity
+#   - arm64 digest pinned (lesson 5)
+global:
+  openshift: true
+  tlsDisable: false
+
+injector:
+  enabled: false   # Shift Gear uses the Vault Secrets Operator and direct auth
+
+server:
+  image:
+    repository: docker.io/hashicorp/vault-enterprise
+    # amd64+arm64 manifest list; CRC on Apple Silicon is arm64
+    tag: "2.1.0-ent@sha256:12c3ac1469d11da17747927128ed11bce825a012d3ce13b066d0442d0105df0a"
+
+  enterpriseLicense:
+    secretName: vault-license
+    secretKey: license
+
+  resources:
+    requests: { cpu: 250m, memory: 384Mi }
+    limits: { memory: 1Gi }
+
+  extraEnvironmentVars:
+    VAULT_CACERT: /vault/userconfig/vault-tls/ca.crt
+
+  extraVolumes:
+    - type: secret
+      name: vault-tls
+    - type: configMap
+      name: sg-ca
+
+  # wait-for-seal-vault: poll the seal AGENT's /v1/sys/health through mTLS
+  # until it answers 200 (agent unsealed and proxying). The agent requires a
+  # client certificate, so the pod's vault-tls Secret is mounted here too.
+  # This prevents the "error parsing Seal configuration" crash-loop (lesson 11).
+  extraInitContainers:
+    - name: wait-for-seal-vault
+      image: docker.io/hashicorp/vault-enterprise:2.1.0-ent@sha256:12c3ac1469d11da17747927128ed11bce825a012d3ce13b066d0442d0105df0a
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          until vault status \
+                -address=https://seal-agent.sg-vault-seal.svc:8200 \
+                -ca-cert=/vault/userconfig/sg-ca/ca.pem \
+                -client-cert=/vault/userconfig/vault-tls/tls.crt \
+                -client-key=/vault/userconfig/vault-tls/tls.key \
+                >/dev/null 2>&1; do
+            echo "$(date -u +%FT%TZ) waiting: seal agent unreachable or seal Vault sealed — run: make unseal"
+            sleep 5
+          done
+          echo "$(date -u +%FT%TZ) seal agent is ready — starting Vault"
+      volumeMounts:
+        - name: userconfig-vault-tls
+          mountPath: /vault/userconfig/vault-tls
+          readOnly: true
+        - name: userconfig-sg-ca
+          mountPath: /vault/userconfig/sg-ca
+          readOnly: true
+      resources:
+        requests: { cpu: 10m, memory: 32Mi }
+        limits: { memory: 64Mi }
+
+  readinessProbe:
+    enabled: true
+    path: "/v1/sys/health?standbyok=true&perfstandbyok=true&sealedcode=204&uninitcode=204"
+  livenessProbe:
+    enabled: false
+
+  dataStorage:
+    enabled: true
+    size: 2Gi
+  auditStorage:
+    enabled: false   # file audit device writes to stdout; socket device added in prompt 07
+
+  # Single-node CRC: the chart's default required pod anti-affinity on
+  # kubernetes.io/hostname would leave vault-1 and vault-2 Pending forever.
+  # Cleared with an empty string (documented choice — not a bug).
+  affinity: ""
+
+  # OnDelete: apply does not restart pods automatically; each pod is rolled
+  # manually (make vault-roll) to keep the cluster at 3 voters throughout.
+  updateStrategy:
+    type: OnDelete
+
+  route:
+    enabled: false   # Route is managed by terraform/foundation; chart route disabled
+
+  ha:
+    enabled: true
+    replicas: 3
+    # api_addr: Kubernetes expands $(POD_IP) because POD_IP is defined BEFORE
+    # VAULT_API_ADDR in the chart's env list. $(HOSTNAME) is also safe for
+    # clusterAddr (Raft peer-to-peer). Verified with `helm template`.
+    raft:
+      enabled: true
+      setNodeId: true
+      config: |
+        ui = true
+        log_level = "info"
+
+        listener "tcp" {
+          address         = "[::]:8200"
+          cluster_address = "[::]:8201"
+          tls_cert_file   = "/vault/userconfig/vault-tls/tls.crt"
+          tls_key_file    = "/vault/userconfig/vault-tls/tls.key"
+          # Clients present certificates for cert auth (prompt 06); not required
+          # for all clients.
+        }
+
+        storage "raft" {
+          path = "/vault/data"
+
+          retry_join {
+            leader_api_addr     = "https://vault-0.vault-internal:8200"
+            leader_ca_cert_file = "/vault/userconfig/vault-tls/ca.crt"
+          }
+          retry_join {
+            leader_api_addr     = "https://vault-1.vault-internal:8200"
+            leader_ca_cert_file = "/vault/userconfig/vault-tls/ca.crt"
+          }
+          retry_join {
+            leader_api_addr     = "https://vault-2.vault-internal:8200"
+            leader_ca_cert_file = "/vault/userconfig/vault-tls/ca.crt"
+          }
+        }
+
+        # Transit seal through the seal agent's mTLS proxy.
+        # The agent injects its own AppRole token on every proxied request
+        # (api_proxy { use_auto_auth_token = "force" }).
+        # The pod presents its vault-tls client certificate to the mTLS listener.
+        # No token field here — if the running binary requires one as a placeholder
+        # and the agent overwrites it, add: token = "" (recorded in execution log).
+        seal "transit" {
+          address         = "https://seal-agent.sg-vault-seal.svc:8200"
+          key_name        = "autounseal"
+          mount_path      = "transit/"
+          tls_ca_cert     = "/vault/userconfig/sg-ca/ca.pem"
+          tls_client_cert = "/vault/userconfig/vault-tls/tls.crt"
+          tls_client_key  = "/vault/userconfig/vault-tls/tls.key"
+          tls_server_name = "seal-agent.sg-vault-seal.svc"
+          # Required placeholder, not a credential: the agent's api_proxy
+          # (use_auto_auth_token = "force") replaces it on every request.
+          # Same as golden_ticket. disable_renewal: there is nothing to renew.
+          token           = "agent-supplied"
+          disable_renewal = "true"
+        }
+
+        service_registration "kubernetes" {}
+
+ui:
+  enabled: true

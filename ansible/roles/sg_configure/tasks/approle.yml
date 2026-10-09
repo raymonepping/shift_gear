@@ -1,0 +1,70 @@
+---
+# ansible/roles/sg_configure/tasks/approle.yml
+# Enable AppRole auth and configure sg-automation role.
+# sg-automation: used by the API server to obtain wrapped secret-ids for
+# the agent demo — never used directly by humans.
+# CIDR bounds: pod_cidr from the infra contract (canonical form, e.g. 10.217.0.0/22).
+
+- name: Configure AppRole auth
+  module_defaults:
+    ansible.builtin.uri:
+      ca_path: "{{ sg_configure_vault_ca }}"
+      headers:
+        X-Vault-Token: "{{ sg_vault_token }}"
+        X-Vault-Namespace: "shift-gear"
+  no_log: true
+  block:
+    - name: Read enabled auth methods (for AppRole check)
+      ansible.builtin.uri:
+        url: "{{ sg_configure_vault_addr }}/v1/sys/auth"
+      check_mode: false
+      register: sg_configure_approle_auth_list
+
+    - name: Enable approle auth if absent
+      ansible.builtin.uri:
+        url: "{{ sg_configure_vault_addr }}/v1/sys/auth/approle"
+        method: POST
+        body_format: json
+        body:
+          type: approle
+          description: "Shift Gear automation AppRole"
+        status_code: [200, 204]
+      changed_when: true
+      when: "'approle/' not in sg_configure_approle_auth_list.json.data"
+
+    - name: Read sg-automation AppRole role
+      ansible.builtin.uri:
+        url: "{{ sg_configure_vault_addr }}/v1/auth/approle/role/sg-automation"
+        status_code: [200, 404]
+      check_mode: false
+      register: sg_configure_approle_role_read
+
+    - name: Define desired sg-automation role
+      ansible.builtin.set_fact:
+        sg_configure_approle_desired:
+          token_policies: ["sg-automation"]
+          token_ttl: "15m"
+          token_max_ttl: "30m"
+          secret_id_num_uses: 1
+          secret_id_bound_cidrs: ["{{ infra_cluster.pod_cidr }}"]
+          token_bound_cidrs: ["{{ infra_cluster.pod_cidr }}"]
+          enable_local_secret_ids: false
+          # Brute-force lockout: 3 failed attempts in 30 s triggers a 30-second cooldown
+          token_num_uses: 0
+
+    - name: Write sg-automation role when absent or CIDR changed
+      ansible.builtin.uri:
+        url: "{{ sg_configure_vault_addr }}/v1/auth/approle/role/sg-automation"
+        method: POST
+        body_format: json
+        body: "{{ sg_configure_approle_desired }}"
+        status_code: [200, 204]
+      changed_when: true
+      when: >-
+        sg_configure_approle_role_read.status == 404 or
+        (sg_configure_approle_role_read.json.data.secret_id_bound_cidrs | default([]) | sort)
+          != (sg_configure_approle_desired.secret_id_bound_cidrs | sort) or
+        (sg_configure_approle_role_read.json.data.token_bound_cidrs | default([]) | sort)
+          != (sg_configure_approle_desired.token_bound_cidrs | sort) or
+        sg_configure_approle_role_read.json.data.token_ttl != 900 or
+        sg_configure_approle_role_read.json.data.secret_id_num_uses != sg_configure_approle_desired.secret_id_num_uses

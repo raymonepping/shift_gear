@@ -1,0 +1,267 @@
+---
+# ansible/roles/sg_identity_verify/tasks/main.yml
+# Prove people work end-to-end. Every person logs in through Keycloak (JWT)
+# and through LDAP, receives exactly their expected policies, and named
+# authorisation checks confirm least-privilege is enforced. All tokens are
+# revoked. Results are written to .build/identity-verify.json (no secrets).
+
+# ── Read back identity secrets from Vault KV ──────────────────────────────────
+- name: Read identity secrets from Vault KV
+  ansible.builtin.uri:
+    url: "{{ sg_identity_verify_vault_addr }}/v1/{{ sg_identity_verify_kv_mount }}/data/{{ sg_identity_verify_kv_path }}"
+    ca_path: "{{ sg_identity_verify_vault_ca }}"
+    headers:
+      X-Vault-Token: "{{ sg_vault_token }}"
+      X-Vault-Namespace: "shift-gear"
+    status_code: [200]
+  check_mode: false
+  register: sg_identity_verify_kv
+  retries: 3
+  delay: 3
+  until: sg_identity_verify_kv.status == 200
+  no_log: true
+
+- name: Expose secrets for this run
+  ansible.builtin.set_fact:
+    sg_identity_verify_secrets: "{{ sg_identity_verify_kv.json.data.data }}"
+    sg_identity_verify_report: []
+  no_log: true
+
+# ── Keycloak password grant (sg-cli, lab only) ────────────────────────────────
+- name: Keycloak password grant per person (sg-cli)
+  ansible.builtin.uri:
+    url: "{{ sg_identity_verify_token_url }}"
+    method: POST
+    ca_path: "{{ playbook_dir }}/../{{ infra_cluster.ingress_ca_path }}"   # Keycloak: behind a reencrypt Route
+    body_format: form-urlencoded
+    body:
+      grant_type: password
+      client_id: sg-cli
+      scope: openid
+      username: "{{ item.uid }}"
+      password: "{{ sg_identity_verify_secrets['user_' ~ item.uid] }}"
+    status_code: [200, 400, 401]
+  check_mode: false
+  loop: "{{ sg_identity_verify_users }}"
+  loop_control:
+    label: "{{ item.uid }}"
+  register: sg_identity_verify_kc
+  no_log: true
+
+# ── Vault JWT login with each Keycloak id_token ───────────────────────────────
+- name: Vault JWT login per person
+  ansible.builtin.uri:
+    url: "{{ sg_identity_verify_vault_addr }}/v1/auth/jwt/login"
+    method: POST
+    ca_path: "{{ sg_identity_verify_vault_ca }}"
+    headers:
+      X-Vault-Namespace: "shift-gear"
+    body_format: json
+    body:
+      role: cli
+      jwt: "{{ item.json.id_token | default('') }}"
+    status_code: [200, 400, 403]
+  check_mode: false
+  loop: "{{ sg_identity_verify_kc.results }}"
+  loop_control:
+    index_var: loop_idx
+    label: "{{ sg_identity_verify_users[loop_idx].uid }}"
+  register: sg_identity_verify_jwt_login
+  no_log: true
+
+# ── Vault LDAP login per person ───────────────────────────────────────────────
+- name: Vault LDAP login per person
+  ansible.builtin.uri:
+    url: "{{ sg_identity_verify_vault_addr }}/v1/auth/ldap/login/{{ item.uid }}"
+    method: POST
+    ca_path: "{{ sg_identity_verify_vault_ca }}"
+    headers:
+      X-Vault-Namespace: "shift-gear"
+    body_format: json
+    body:
+      password: "{{ sg_identity_verify_secrets['user_' ~ item.uid] }}"
+    status_code: [200, 400, 403]
+  check_mode: false
+  loop: "{{ sg_identity_verify_users }}"
+  loop_control:
+    label: "{{ item.uid }}"
+  register: sg_identity_verify_ldap_login
+  no_log: true
+
+# ── Index tokens (memory only) ────────────────────────────────────────────────
+- name: Index tokens by person
+  ansible.builtin.set_fact:
+    sg_identity_verify_tok: >-
+      {{ sg_identity_verify_tok | default({}) | combine({item.0.uid: {
+           'jwt':  item.1.json.auth.client_token | default(''),
+           'ldap': item.2.json.auth.client_token | default('')}}) }}
+  loop: "{{ sg_identity_verify_users
+            | zip(sg_identity_verify_jwt_login.results,
+                  sg_identity_verify_ldap_login.results)
+            | list }}"
+  loop_control:
+    label: "{{ item.0.uid }}"
+  no_log: true
+
+# ── token/lookup-self for effective identity_policies ────────────────────────
+- name: Look up each person's tokens
+  ansible.builtin.uri:
+    url: "{{ sg_identity_verify_vault_addr }}/v1/auth/token/lookup-self"
+    ca_path: "{{ sg_identity_verify_vault_ca }}"
+    headers:
+      X-Vault-Token: "{{ sg_identity_verify_tok[item.0.uid][item.1] }}"
+      X-Vault-Namespace: "shift-gear"
+    status_code: [200, 400, 403]
+  check_mode: false
+  loop: "{{ sg_identity_verify_users | product(['jwt', 'ldap']) | list }}"
+  loop_control:
+    label: "{{ item.0.uid }}/{{ item.1 }}"
+  register: sg_identity_verify_lookup
+  no_log: true
+
+- name: Index effective identity policies
+  ansible.builtin.set_fact:
+    sg_identity_verify_policies: >-
+      {{ sg_identity_verify_policies | default({})
+         | combine({item.item.0.uid ~ '/' ~ item.item.1:
+              (item.json.data.identity_policies | default([], true) | sort)
+              if item.status == 200 else []}) }}
+  loop: "{{ sg_identity_verify_lookup.results }}"
+  loop_control:
+    label: "{{ item.item.0.uid }}/{{ item.item.1 }}"
+  no_log: true
+
+# ── Named authorisation checks ────────────────────────────────────────────────
+
+# ada (engineers) reads KV — inside sg-engineer's grant (kv/metadata/shift-gear/*)
+- name: Ada reads a KV path (must succeed)
+  ansible.builtin.uri:
+    url: "{{ sg_identity_verify_vault_addr }}/v1/{{ sg_identity_verify_kv_mount }}/metadata/shift-gear/"
+    ca_path: "{{ sg_identity_verify_vault_ca }}"
+    headers:
+      X-Vault-Token: "{{ sg_identity_verify_tok.ada.jwt }}"
+      X-Vault-Namespace: "shift-gear"
+    status_code: [200, 204, 404]
+  check_mode: false
+  register: sg_identity_verify_ada_kv
+  no_log: true
+
+# finn (auditors) tries to write KV — must be denied
+- name: Finn is denied a KV write
+  ansible.builtin.uri:
+    url: "{{ sg_identity_verify_vault_addr }}/v1/{{ sg_identity_verify_kv_mount }}/data/sg-identity-check"
+    method: POST
+    ca_path: "{{ sg_identity_verify_vault_ca }}"
+    headers:
+      X-Vault-Token: "{{ sg_identity_verify_tok.finn.jwt }}"
+      X-Vault-Namespace: "shift-gear"
+    body_format: json
+    body: { data: { probe: denied } }
+    status_code: [200, 204, 403]
+  check_mode: false
+  register: sg_identity_verify_finn_write
+  no_log: true
+
+# ben (staff only) has no engine policies — token lookup must return empty list
+- name: Ben has no engine policies (staff-only, no engine policy)
+  ansible.builtin.set_fact:
+    sg_identity_verify_ben_ok: >-
+      {{ sg_identity_verify_policies['ben/jwt'] | length == 0 }}
+
+# ── Revoke all check tokens ───────────────────────────────────────────────────
+- name: Revoke all check tokens
+  ansible.builtin.uri:
+    url: "{{ sg_identity_verify_vault_addr }}/v1/auth/token/revoke-self"
+    method: POST
+    ca_path: "{{ sg_identity_verify_vault_ca }}"
+    headers:
+      X-Vault-Token: "{{ item }}"
+      X-Vault-Namespace: "shift-gear"
+    status_code: [200, 204, 403]
+  check_mode: false
+  changed_when: false
+  loop: >-
+    {{ sg_identity_verify_tok.values()
+       | map('dict2items')
+       | flatten
+       | map(attribute='value')
+       | select
+       | list }}
+  no_log: true
+
+# ── Build the report ──────────────────────────────────────────────────────────
+- name: Build per-person rows
+  ansible.builtin.set_fact:
+    sg_identity_verify_report: >-
+      {{ sg_identity_verify_report + [
+           {'id': 'kc-' ~ u.uid,
+            'label': 'Keycloak login · ' ~ u.uid,
+            'status': 'pass' if (kc.status == 200 and (kc.json.id_token | default('')) | length > 0) else 'fail',
+            'detail': ('id_token issued by ' ~ sg_identity_verify_keycloak_issuer)
+                      if kc.status == 200 else ('HTTP ' ~ kc.status)},
+           {'id': 'jwt-' ~ u.uid,
+            'label': 'Vault JWT login (Keycloak token) · ' ~ u.uid,
+            'status': 'pass' if (jwt.status == 200 and
+                        (sg_identity_verify_policies[u.uid ~ '/jwt'] | sort) == (u.expected_policies | sort))
+                      else 'fail',
+            'detail': ('identity policies ' ~ (sg_identity_verify_policies[u.uid ~ '/jwt'] | join(',')))
+                      if jwt.status == 200 else ('HTTP ' ~ jwt.status)},
+           {'id': 'ldap-' ~ u.uid,
+            'label': 'Vault LDAP login · ' ~ u.uid,
+            'status': 'pass' if (ldap.status == 200 and
+                        (sg_identity_verify_policies[u.uid ~ '/ldap'] | sort) == (u.expected_policies | sort))
+                      else 'fail',
+            'detail': ('identity policies ' ~ (sg_identity_verify_policies[u.uid ~ '/ldap'] | join(',')))
+                      if ldap.status == 200 else ('HTTP ' ~ ldap.status)}] }}
+  loop: "{{ sg_identity_verify_users
+            | zip(sg_identity_verify_kc.results,
+                  sg_identity_verify_jwt_login.results,
+                  sg_identity_verify_ldap_login.results)
+            | list }}"
+  vars:
+    u: "{{ item.0 }}"
+    kc: "{{ item.1 }}"
+    jwt: "{{ item.2 }}"
+    ldap: "{{ item.3 }}"
+  loop_control:
+    label: "{{ item.0.uid }}"
+  no_log: true
+
+- name: Append authorisation check rows
+  ansible.builtin.set_fact:
+    sg_identity_verify_report: >-
+      {{ sg_identity_verify_report + [
+           {'id': 'ada-kv-read',
+            'label': 'ada (engineers) can list KV metadata',
+            'status': 'pass' if sg_identity_verify_ada_kv.status in [200, 204, 404] else 'fail',
+            'detail': 'HTTP ' ~ sg_identity_verify_ada_kv.status},
+           {'id': 'finn-kv-write-denied',
+            'label': 'finn (auditors) is denied a KV write',
+            'status': 'pass' if sg_identity_verify_finn_write.status == 403 else 'fail',
+            'detail': 'HTTP ' ~ sg_identity_verify_finn_write.status},
+           {'id': 'ben-no-engine-policy',
+            'label': 'ben (staff only) has no engine policies',
+            'status': 'pass' if sg_identity_verify_ben_ok else 'fail',
+            'detail': 'identity policies: ' ~ (sg_identity_verify_policies['ben/jwt'] | join(','))}] }}
+
+- name: Assert all checks pass
+  ansible.builtin.assert:
+    that: sg_identity_verify_report | selectattr('status', 'equalto', 'fail') | list | length == 0
+    fail_msg: >-
+      Identity verify failures:
+      {{ sg_identity_verify_report | selectattr('status', 'equalto', 'fail') | list }}
+    quiet: true
+
+- name: Ensure .build directory exists
+  ansible.builtin.file:
+    path: "{{ playbook_dir }}/../.build"
+    state: directory
+    mode: "0755"
+  changed_when: false
+
+- name: Write report to .build/identity-verify.json
+  ansible.builtin.copy:
+    content: "{{ sg_identity_verify_report | to_nice_json }}"
+    dest: "{{ sg_identity_verify_report_path }}"
+    mode: "0644"
+  changed_when: false

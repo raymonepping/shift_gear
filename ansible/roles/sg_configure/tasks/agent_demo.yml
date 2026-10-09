@@ -1,0 +1,41 @@
+---
+# ansible/roles/sg_configure/tasks/agent_demo.yml
+# Seed kv/shift-gear/agent/demo-secret for the Vault Agent sidecar demo.
+# Written only when absent; never overwritten (same generate-once pattern
+# as app-config). The agent renders it to /vault/secrets/demo-secret.
+
+- name: Check if agent demo secret KV path exists
+  ansible.builtin.uri:
+    url: "{{ sg_configure_vault_addr }}/v1/{{ sg_configure_kv_mount }}/data/shift-gear/agent/demo-secret"
+    ca_path: "{{ sg_configure_vault_ca }}"
+    headers:
+      X-Vault-Token: "{{ sg_vault_token }}"
+      X-Vault-Namespace: "shift-gear"
+    status_code: [200, 404]
+  check_mode: false
+  register: sg_configure_agent_demo_check
+  retries: 3
+  delay: 3
+  until: sg_configure_agent_demo_check.status in [200, 404]
+  no_log: true
+
+- name: Seed agent demo secret (only when absent)
+  ansible.builtin.uri:
+    url: "{{ sg_configure_vault_addr }}/v1/{{ sg_configure_kv_mount }}/data/shift-gear/agent/demo-secret"
+    method: POST
+    ca_path: "{{ sg_configure_vault_ca }}"
+    headers:
+      X-Vault-Token: "{{ sg_vault_token }}"
+      X-Vault-Namespace: "shift-gear"
+    body_format: json
+    body:
+      data:
+        # Generated values: realistic demo content, no literal secrets in source
+        demo_api_key: "{{ lookup('ansible.builtin.password', '/dev/null',
+                                  length=40, chars=['ascii_letters', 'digits']) }}"
+        demo_feature_flag: "agent-sidecar-demo"
+        demo_version: "1.0"
+    status_code: [200, 204]
+  changed_when: true
+  when: sg_configure_agent_demo_check.status == 404
+  no_log: true

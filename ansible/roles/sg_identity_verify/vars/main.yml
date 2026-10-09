@@ -1,0 +1,31 @@
+---
+# ansible/roles/sg_identity_verify/vars/main.yml
+# Variables for the sg_identity_verify role.
+
+sg_identity_verify_vault_addr: "https://vault.{{ infra_cluster.apps_domain }}"
+sg_identity_verify_vault_ca: "{{ playbook_dir }}/../.secrets/tls/pub/ca.pem"
+sg_identity_verify_keycloak_issuer: "https://keycloak.{{ infra_cluster.apps_domain }}/realms/shift-gear"
+sg_identity_verify_token_url: "{{ sg_identity_verify_keycloak_issuer }}/protocol/openid-connect/token"
+sg_identity_verify_kv_mount: "kv"   # the namespace comes from the X-Vault-Namespace header (lesson 16)
+sg_identity_verify_kv_path: "shift-gear/identity"
+sg_identity_verify_base_dn: "dc=shiftgear,dc=local"
+sg_identity_verify_report_path: "{{ playbook_dir }}/../.build/identity-verify.json"
+
+# Canonical persona list (same as sg_identity_users, repeated here to keep the
+# verify role self-contained and not dependent on sg_identity being in scope).
+sg_identity_verify_users:
+  - uid: ada
+    groups: [engineers, staff]
+    expected_policies: [sg-engineer]
+  - uid: ben
+    groups: [staff]
+    expected_policies: []
+  - uid: cleo
+    groups: [operators, staff]
+    expected_policies: [sg-operator]
+  - uid: dirk
+    groups: [approvers, operators, staff]
+    expected_policies: [sg-approver, sg-operator]
+  - uid: finn
+    groups: [auditors]
+    expected_policies: [sg-auditor]

@@ -1,0 +1,147 @@
+---
+# ansible/roles/sg_seal_init/tasks/tokens.yml
+# Shared bootstrap token logic (ported from golden_ticket/vault_bootstrap/tokens.yml).
+# Writes the bootstrap policies, token roles, and issues/renews tokens.
+# Called from sg_seal_init and sg_bootstrap (via symlink in each role's tasks/).
+#
+# vars (passed by include_tasks):
+#   bt_addr              — Vault API address
+#   bt_root_token        — root token (not written to disk, no_log throughout)
+#   bt_tokens            — list of {policy, file}
+#   bt_ca                — CA path for HTTPS verification
+#   bt_tokens_dir        — directory for token files
+#   bootstrap_token_period — period for periodic orphan tokens
+
+- name: Ensure tokens directory exists
+  ansible.builtin.file:
+    path: "{{ bt_tokens_dir }}"
+    state: directory
+    mode: "0700"
+
+- name: Write the bootstrap policies and token roles
+  module_defaults:
+    ansible.builtin.uri:
+      ca_path: "{{ bt_ca }}"
+      headers:
+        X-Vault-Token: "{{ bt_root_token }}"
+  no_log: true
+  block:
+    - name: Read existing bootstrap policies
+      ansible.builtin.uri:
+        url: "{{ bt_addr }}/v1/sys/policies/acl/{{ item.policy }}"
+        status_code: [200, 404]
+      check_mode: false
+      loop: "{{ bt_tokens }}"
+      register: sg_bootstrap_policy_read
+
+    - name: Write bootstrap policies that are absent or have changed
+      ansible.builtin.uri:
+        url: "{{ bt_addr }}/v1/sys/policies/acl/{{ item.item.policy }}"
+        method: PUT
+        body_format: json
+        body:
+          policy: "{{ lookup('file', playbook_dir ~ '/../policies/bootstrap/' ~ item.item.policy ~ '.hcl') }}"
+        status_code: [200, 204]
+      changed_when: true
+      loop: "{{ sg_bootstrap_policy_read.results }}"
+      when: >-
+        item.status == 404 or
+        (item.json.data.policy | default('') | trim) !=
+        (lookup('file', playbook_dir ~ '/../policies/bootstrap/' ~ item.item.policy ~ '.hcl') | trim)
+
+    - name: Read existing token roles
+      ansible.builtin.uri:
+        url: "{{ bt_addr }}/v1/auth/token/roles/{{ item.policy }}"
+        status_code: [200, 404]
+      check_mode: false
+      loop: "{{ bt_tokens }}"
+      register: sg_bootstrap_role_read
+
+    - name: Write token roles that are absent or have changed
+      ansible.builtin.uri:
+        url: "{{ bt_addr }}/v1/auth/token/roles/{{ item.item.policy }}"
+        method: POST
+        body_format: json
+        body:
+          allowed_policies: ["{{ item.item.policy }}"]
+          orphan: true
+          renewable: true
+          token_period: "{{ bootstrap_token_period }}"
+        status_code: [200, 204]
+      changed_when: true
+      loop: "{{ sg_bootstrap_role_read.results }}"
+      when: >-
+        item.status == 404 or
+        item.json.data.allowed_policies | default([]) != [item.item.policy] or
+        not (item.json.data.orphan | default(false)) or
+        (item.json.data.token_period | default(0) | int) !=
+        (bootstrap_token_period | community.general.to_seconds | int)
+
+- name: Check for existing token files
+  ansible.builtin.stat:
+    path: "{{ bt_tokens_dir }}/{{ item.file }}"
+  loop: "{{ bt_tokens }}"
+  register: sg_bootstrap_token_files
+
+- name: Validate existing tokens (lookup-self)
+  ansible.builtin.uri:
+    url: "{{ bt_addr }}/v1/auth/token/lookup-self"
+    ca_path: "{{ bt_ca }}"
+    headers:
+      X-Vault-Token: "{{ lookup('file', bt_tokens_dir ~ '/' ~ item.item.file) | trim }}"
+    status_code: [200, 403]
+  check_mode: false
+  loop: "{{ sg_bootstrap_token_files.results }}"
+  register: sg_bootstrap_token_check
+  no_log: true
+  when: item.stat.exists
+
+- name: Issue missing or refused tokens through their role
+  ansible.builtin.uri:
+    url: "{{ bt_addr }}/v1/auth/token/create/{{ item.item.item.policy }}"
+    ca_path: "{{ bt_ca }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bt_root_token }}"
+    body_format: json
+    body:
+      policies: ["{{ item.item.item.policy }}"]
+      display_name: "{{ item.item.item.file }}"
+  loop: "{{ sg_bootstrap_token_check.results }}"
+  register: sg_bootstrap_new_token
+  changed_when: true
+  no_log: true
+  when: item.skipped | default(false) or item.status == 403
+
+- name: Persist new tokens (0600)
+  ansible.builtin.copy:
+    content: "{{ item.json.auth.client_token }}\n"
+    dest: "{{ bt_tokens_dir }}/{{ item.item.item.item.file }}"
+    mode: "0600"
+  loop: "{{ sg_bootstrap_new_token.results }}"
+  no_log: true
+  diff: false
+  when: item.json is defined
+
+- name: Renew every token (maintenance, not a configuration change)
+  ansible.builtin.uri:
+    url: "{{ bt_addr }}/v1/auth/token/renew-self"
+    ca_path: "{{ bt_ca }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ lookup('file', bt_tokens_dir ~ '/' ~ item.file) | trim }}"
+  loop: "{{ bt_tokens }}"
+  register: sg_bootstrap_renew
+  changed_when: false
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Each token holds exactly its policy plus default
+  ansible.builtin.assert:
+    that: (item.json.auth.policies | sort) == (['default', item.item.policy] | sort)
+    fail_msg: "{{ item.item.file }} does not hold exactly [default, {{ item.item.policy }}]."
+    quiet: true
+  loop: "{{ sg_bootstrap_renew.results }}"
+  loop_control:
+    label: "{{ item.item.file }}"
+  when: not ansible_check_mode

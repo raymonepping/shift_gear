@@ -1,0 +1,25 @@
+---
+# ansible/ux.yml — Phase: ansible ux
+# UI/API in-cluster builds (BuildConfig start-builds), evidence ConfigMap sync.
+# This phase depends on configure completing (postgres, VSO, identity, agent).
+# idempotency-allow: evidence ConfigMap sync is regenerated every run.
+# No Vault token here: scripts/evidence.py reads Ansible's own token files.
+
+- name: UX — UI/API in-cluster builds, evidence ConfigMap sync
+  hosts: localhost
+  gather_facts: false
+
+  pre_tasks:
+    - name: Load infra contract
+      ansible.builtin.set_fact:
+        sg_tf_infra_contract: "{{ lookup('file', playbook_dir + '/../.build/terraform/infra.json') | from_json }}"
+      changed_when: false
+
+    - name: Set infra_cluster alias
+      ansible.builtin.set_fact:
+        infra_cluster: "{{ sg_tf_infra_contract.cluster }}"
+      changed_when: false
+
+
+  roles:
+    - role: sg_ux

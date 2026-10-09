@@ -1,0 +1,16 @@
+---
+# ansible/roles/sg_configure/handlers/main.yml
+# Handlers for sg_configure — run once at the end of the role if notified.
+
+- name: Resync VSO app-config
+  kubernetes.core.k8s:
+    kubeconfig: "{{ sg_configure_kubeconfig }}"
+    state: patched
+    api_version: secrets.hashicorp.com/v1beta1
+    kind: VaultStaticSecret
+    namespace: sg-workloads
+    name: app-config
+    definition:
+      metadata:
+        annotations:
+          shift-gear/seeded-at: "{{ now(utc=true).isoformat() }}"

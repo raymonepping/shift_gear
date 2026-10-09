@@ -1,0 +1,36 @@
+---
+# ansible/roles/sg_configure/tasks/main.yml
+# Configure phase: full Vault-side setup.
+# Sub-tasks in order:
+#   1. secrets    — postgres-admin and sg-ca-secret in sg-workloads
+#   2. k8s_auth   — Vault kubernetes auth method + vso-workloads role
+#   3. database   — Vault database connection, demo-reader role, rotate-root
+#   4. kv_seed    — shift-gear/config/app-config seed (generate-once)
+#   5. approle    — AppRole mount + sg-automation role
+#   6. cert_auth  — cert auth mount + internal-client role
+#   7. k8s_roles  — sg-api and sg-agent-demo kubernetes auth roles
+#   8. agent_demo — shift-gear/agent/demo-secret KV seed
+
+- name: Configure secrets — postgres-admin and sg-ca-secret in sg-workloads
+  ansible.builtin.include_tasks: secrets.yml
+
+- name: Configure k8s auth — kubernetes auth method and vso-workloads role
+  ansible.builtin.include_tasks: k8s_auth.yml
+
+- name: Configure database — connection, demo-reader role, rotate-root
+  ansible.builtin.include_tasks: database.yml
+
+- name: Configure KV seed — app-config (generate-once, never overwrite)
+  ansible.builtin.include_tasks: kv_seed.yml
+
+- name: Configure AppRole auth — sg-automation with CIDR bounds
+  ansible.builtin.include_tasks: approle.yml
+
+- name: Configure cert auth — internal-client role, pki-int trust
+  ansible.builtin.include_tasks: cert_auth.yml
+
+- name: Configure additional Kubernetes auth roles — sg-api and sg-agent-demo
+  ansible.builtin.include_tasks: k8s_roles.yml
+
+- name: Configure agent demo KV seed — shift-gear/agent/demo-secret
+  ansible.builtin.include_tasks: agent_demo.yml

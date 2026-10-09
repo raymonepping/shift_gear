@@ -1,0 +1,213 @@
+---
+# ansible/roles/sg_identity/tasks/keycloak.yml
+# Realm shift-gear, LDAP federation, and two OIDC clients (vault, sg-cli).
+# All tasks are no_log where secrets appear.
+# D14: keycloak_user_federation always reports changed in check mode on a
+# converged realm; federation is skipped in check mode, covered by the
+# idempotency gate (real re-run, changed=0) — see golden_ticket lesson 26.
+
+- name: Wait for Keycloak to be ready
+  ansible.builtin.uri:
+    url: "{{ sg_identity_keycloak_url }}/realms/master"   # /health/* is on the unexposed management port 9000
+    method: GET
+    ca_path: "{{ sg_identity_ingress_ca }}"
+    status_code: [200]
+  register: sg_identity_kc_health
+  until: sg_identity_kc_health.status == 200
+  retries: 30
+  delay: 10
+
+- name: Ensure the shift-gear realm
+  community.general.keycloak_realm:
+    auth_keycloak_url: "{{ sg_identity_keycloak_url }}"
+    auth_realm: master
+    auth_username: admin
+    auth_password: "{{ sg_identity_secrets_values.keycloak_admin_password }}"
+    id: "{{ sg_identity_realm }}"
+    realm: "{{ sg_identity_realm }}"
+    display_name: "Shift Gear"
+    enabled: true
+    ssl_required: external
+    state: present
+  no_log: true
+  register: sg_identity_kc_realm
+
+# On the run that creates the realm Keycloak fills in defaults on the first
+# PUT, so a second PUT in the same run is required to converge. Without this
+# the next run reports one stray change (golden_ticket lesson).
+  # No CA option on the keycloak_* modules; Python's default TLS context
+  # honours SSL_CERT_FILE, so they trust the router CA through it.
+  environment:
+    SSL_CERT_FILE: "{{ sg_identity_ingress_ca }}"
+
+- name: Settle a newly created realm
+  when: not ansible_check_mode and not sg_identity_kc_realm.existing
+  community.general.keycloak_realm:
+    auth_keycloak_url: "{{ sg_identity_keycloak_url }}"
+    auth_realm: master
+    auth_username: admin
+    auth_password: "{{ sg_identity_secrets_values.keycloak_admin_password }}"
+    id: "{{ sg_identity_realm }}"
+    realm: "{{ sg_identity_realm }}"
+    display_name: "Shift Gear"
+    enabled: true
+    ssl_required: external
+    state: present
+  changed_when: false
+  no_log: true
+
+# D14: always reported changed in check mode; skip there.
+# Covered by idempotency gate (real second run, changed=0).
+  # No CA option on the keycloak_* modules; Python's default TLS context
+  # honours SSL_CERT_FILE, so they trust the router CA through it.
+  environment:
+    SSL_CERT_FILE: "{{ sg_identity_ingress_ca }}"
+
+- name: Federate OpenLDAP (read-only) with group mapper
+  when: not ansible_check_mode
+  community.general.keycloak_user_federation:
+    auth_keycloak_url: "{{ sg_identity_keycloak_url }}"
+    auth_realm: master
+    auth_username: admin
+    auth_password: "{{ sg_identity_secrets_values.keycloak_admin_password }}"
+    realm: "{{ sg_identity_realm }}"
+    name: shift-gear-ldap
+    provider_id: ldap
+    state: present
+    config:
+      enabled: true
+      priority: 0
+      vendor: other
+      editMode: READ_ONLY
+      connectionUrl: "{{ sg_identity_ldap_svc }}"
+      bindDn: "cn=admin,{{ sg_identity_base_dn }}"
+      bindCredential: "{{ sg_identity_secrets_values.ldap_admin_password }}"
+      usersDn: "ou=people,{{ sg_identity_base_dn }}"
+      usernameLDAPAttribute: uid
+      rdnLDAPAttribute: uid
+      uuidLDAPAttribute: entryUUID
+      userObjectClasses: "inetOrgPerson, organizationalPerson"
+      searchScope: 1
+      authType: simple
+      importEnabled: true
+      syncRegistrations: false
+      trustEmail: true
+      pagination: false
+    # Listing mappers replaces Keycloak's defaults, so all standard attribute
+    # mappers are declared explicitly here (dropping the list removes them).
+    # first name maps from givenName — not cn — per red_doors lesson.
+    mappers:
+      - name: username
+        providerId: user-attribute-ldap-mapper
+        providerType: org.keycloak.storage.ldap.mappers.LDAPStorageMapper
+        config:
+          ldap.attribute: uid
+          user.model.attribute: username
+          read.only: "true"
+          always.read.value.from.ldap: "false"
+          is.mandatory.in.ldap: "true"
+      - name: email
+        providerId: user-attribute-ldap-mapper
+        providerType: org.keycloak.storage.ldap.mappers.LDAPStorageMapper
+        config:
+          ldap.attribute: mail
+          user.model.attribute: email
+          read.only: "true"
+          always.read.value.from.ldap: "false"
+          is.mandatory.in.ldap: "false"
+      # first name: mapped from givenName (not cn) — see red_doors lesson.
+      - name: first name
+        providerId: user-attribute-ldap-mapper
+        providerType: org.keycloak.storage.ldap.mappers.LDAPStorageMapper
+        config:
+          ldap.attribute: givenName
+          user.model.attribute: firstName
+          read.only: "true"
+          always.read.value.from.ldap: "true"
+          is.mandatory.in.ldap: "true"
+      - name: last name
+        providerId: user-attribute-ldap-mapper
+        providerType: org.keycloak.storage.ldap.mappers.LDAPStorageMapper
+        config:
+          ldap.attribute: sn
+          user.model.attribute: lastName
+          read.only: "true"
+          always.read.value.from.ldap: "true"
+          is.mandatory.in.ldap: "true"
+      - name: groups
+        providerId: group-ldap-mapper
+        providerType: org.keycloak.storage.ldap.mappers.LDAPStorageMapper
+        config:
+          groups.dn: "ou=groups,{{ sg_identity_base_dn }}"
+          group.name.ldap.attribute: cn
+          group.object.classes: groupOfNames
+          membership.ldap.attribute: member
+          membership.attribute.type: DN
+          membership.user.ldap.attribute: uid
+          mode: READ_ONLY
+          user.roles.retrieve.strategy: LOAD_GROUPS_BY_MEMBER_ATTRIBUTE
+          preserve.group.inheritance: "false"
+          ignore.missing.groups: "false"
+          drop.non.existing.groups.during.sync: "false"
+          # multivalued declared so group claims carry all groups the user
+          # belongs to, not just the first one (golden_ticket lesson).
+          multivalued: "true"
+  no_log: true
+  # No CA option on the keycloak_* modules; Python's default TLS context
+  # honours SSL_CERT_FILE, so they trust the router CA through it.
+  environment:
+    SSL_CERT_FILE: "{{ sg_identity_ingress_ca }}"
+
+- name: Ensure OIDC clients (vault + sg-cli)
+  community.general.keycloak_client:
+    auth_keycloak_url: "{{ sg_identity_keycloak_url }}"
+    auth_realm: master
+    auth_username: admin
+    auth_password: "{{ sg_identity_secrets_values.keycloak_admin_password }}"
+    realm: "{{ sg_identity_realm }}"
+    client_id: "{{ item.client_id }}"
+    name: "{{ item.client_id }}"
+    enabled: true
+    protocol: openid-connect
+    public_client: "{{ item.public }}"
+    secret: "{{ item.secret | default(omit) }}"
+    client_authenticator_type: client-secret
+    standard_flow_enabled: "{{ item.standard }}"
+    direct_access_grants_enabled: "{{ item.direct }}"
+    implicit_flow_enabled: false
+    service_accounts_enabled: false
+    redirect_uris: "{{ item.redirects }}"
+    web_origins: "{{ item.origins | default([]) }}"
+    protocol_mappers:
+      - name: groups
+        protocol: openid-connect
+        protocolMapper: oidc-group-membership-mapper
+        config:
+          claim.name: groups
+          full.path: "false"
+          id.token.claim: "true"
+          access.token.claim: "true"
+          userinfo.token.claim: "true"
+          multivalued: "true"
+    state: present
+  loop:
+    # Confidential client for the Vault UI OIDC flow
+    - client_id: vault
+      public: false
+      secret: "{{ sg_identity_secrets_values.vault_client_secret }}"
+      standard: true
+      direct: false
+      redirects: "{{ sg_identity_oidc_redirect_uris }}"
+    # Public client for direct grants in identity-verify (lab only)
+    - client_id: sg-cli
+      public: true
+      standard: false
+      direct: true
+      redirects: []
+  loop_control:
+    label: "{{ item.client_id }}"
+  no_log: true
+  # No CA option on the keycloak_* modules; Python's default TLS context
+  # honours SSL_CERT_FILE, so they trust the router CA through it.
+  environment:
+    SSL_CERT_FILE: "{{ sg_identity_ingress_ca }}"

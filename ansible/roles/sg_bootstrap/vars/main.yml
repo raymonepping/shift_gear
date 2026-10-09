@@ -1,0 +1,20 @@
+---
+# ansible/roles/sg_bootstrap/vars/main.yml
+# Variables for the bootstrap role. All vars use the sg_bootstrap_ prefix.
+
+sg_bootstrap_init_path: "{{ playbook_dir }}/../.secrets/vault-init.json"
+sg_bootstrap_leader_addr: "https://vault.{{ infra_cluster.apps_domain }}"
+sg_bootstrap_vault_ca: "{{ playbook_dir }}/../.secrets/tls/pub/ca.pem"
+sg_bootstrap_tokens_dir: "{{ playbook_dir }}/../.secrets/tokens"
+
+# Recovery keys: 3 shares / 2 threshold (transit-sealed; these keys recover
+# only when the transit seal is lost). 3/2 is appropriate for a reference lab.
+sg_bootstrap_recovery_shares: 3
+sg_bootstrap_recovery_threshold: 2
+
+sg_bootstrap_token_period: "24h"
+
+sg_bootstrap_platform_tokens:
+  - {policy: "sg-tf-platform", file: "tf-platform"}
+  - {policy: "sg-ansible-platform", file: "ansible-platform"}
+sg_bootstrap_namespace: sg-vault

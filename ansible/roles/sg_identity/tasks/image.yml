@@ -1,0 +1,79 @@
+---
+# ansible/roles/sg_identity/tasks/image.yml
+# Build the OpenLDAP image in-cluster (Terraform owns the BuildConfig and the
+# ImageStream; building is a moment, so it is Ansible's). Built only when the
+# build context changed: its digest is kept as an annotation on the
+# ImageStream, so a re-run is changed=0. macOS xattrs are stripped and
+# COPYFILE_DISABLE is set so no ._* files reach the build (lesson 7).
+
+- name: Compute the OpenLDAP build-context digest
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      find . -type f ! -name '._*' -print0 | LC_ALL=C sort -z |
+      xargs -0 shasum -a 256 | shasum -a 256 | cut -d' ' -f1
+    chdir: "{{ sg_identity_openldap_context }}"
+    executable: /bin/bash
+  register: sg_identity_ldap_src
+  changed_when: false
+  check_mode: false
+
+- name: Read the OpenLDAP ImageStream
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ sg_identity_kubeconfig }}"
+    api_version: image.openshift.io/v1
+    kind: ImageStream
+    namespace: sg-identity
+    name: openldap
+  register: sg_identity_ldap_is
+
+- name: Decide whether the OpenLDAP image needs a build
+  ansible.builtin.set_fact:
+    sg_identity_ldap_build_needed: >-
+      {{ (sg_identity_ldap_is.resources | first).status.tags | default([])
+         | selectattr('tag', 'equalto', 'latest') | list | length == 0
+         or ((sg_identity_ldap_is.resources | first).metadata.annotations | default({}))
+            ['shift-gear/source-digest'] | default('') != sg_identity_ldap_src.stdout }}
+
+- name: Build the OpenLDAP image in-cluster
+  when: sg_identity_ldap_build_needed | bool and not ansible_check_mode
+  block:
+    - name: Strip macOS extended attributes from the build context
+      ansible.builtin.command:
+        argv: [xattr, -rc, "{{ sg_identity_openldap_context }}"]
+      changed_when: false
+
+    - name: Start the build from the local context and wait for it
+      ansible.builtin.command:
+        argv: [oc, -n, sg-identity, start-build, openldap,
+               "--from-dir={{ sg_identity_openldap_context }}", --follow, --wait]
+      environment:
+        COPYFILE_DISABLE: "1"
+        KUBECONFIG: "{{ sg_identity_kubeconfig }}"
+      register: sg_identity_ldap_build
+      changed_when: true
+
+    - name: Record the built context digest on the ImageStream
+      kubernetes.core.k8s:
+        kubeconfig: "{{ sg_identity_kubeconfig }}"
+        state: patched
+        api_version: image.openshift.io/v1
+        kind: ImageStream
+        namespace: sg-identity
+        name: openldap
+        definition:
+          metadata:
+            annotations:
+              shift-gear/source-digest: "{{ sg_identity_ldap_src.stdout }}"
+
+    # Replace the pod (not the Deployment's template, which is Terraform's)
+    # so it pulls the new image now instead of after its pull back-off.
+    - name: Replace the OpenLDAP pod so it runs the new image
+      kubernetes.core.k8s:
+        kubeconfig: "{{ sg_identity_kubeconfig }}"
+        state: absent
+        api_version: v1
+        kind: Pod
+        namespace: sg-identity
+        label_selectors:
+          - app.kubernetes.io/name=openldap

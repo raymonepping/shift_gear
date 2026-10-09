@@ -1,0 +1,294 @@
+---
+# ansible/roles/sg_identity/tasks/vault_auth.yml
+# Configure Vault auth methods in the shift-gear namespace:
+#   oidc/  — Keycloak browser/CLI flow (bound to oidc_client_id; refuses JWT)
+#   jwt/   — Keycloak id_tokens presented directly (no client_id, JWKS only)
+#   ldap/  — direct directory auth
+# External groups (one per directory group per mount) carry the policy.
+# The policies themselves are Terraform's — we assert they exist before wiring.
+# All URI tasks set X-Vault-Namespace explicitly (lesson 16) and never put
+# secrets in query strings (lesson 30).
+
+- name: Load the ingress CA for OIDC discovery
+  ansible.builtin.set_fact:
+    sg_identity_ingress_ca_pem: "{{ lookup('file', playbook_dir + '/../' + infra_cluster.ingress_ca_path) }}"
+  no_log: true
+
+- name: Manage Vault auth and identity
+  module_defaults:
+    ansible.builtin.uri:
+      ca_path: "{{ sg_identity_vault_ca }}"
+      headers:
+        X-Vault-Token: "{{ sg_vault_token }}"
+        X-Vault-Namespace: "shift-gear"
+  no_log: true
+  block:
+    # ── Policies: Terraform's — assert they exist ────────────────────────────
+    - name: Read policies that Terraform owns
+      ansible.builtin.uri:
+        url: "{{ sg_identity_vault_addr }}/v1/sys/policies/acl/{{ item }}"
+        status_code: [200, 404]
+      check_mode: false
+      loop: >-
+        {{ sg_identity_groups.values()
+           | select('ne', '')
+           | list
+           | unique }}
+      register: sg_identity_policy_reads
+
+    - name: Require all person policies to exist (created by terraform/platform)
+      ansible.builtin.assert:
+        that: sg_identity_policy_reads.results | selectattr('status', 'equalto', 404) | list | length == 0
+        fail_msg: >-
+          Missing policies {{ sg_identity_policy_reads.results
+            | selectattr('status', 'equalto', 404)
+            | map(attribute='item') | list }}:
+          run 'make platform' first.
+        quiet: true
+
+    # ── Auth method enablement ────────────────────────────────────────────────
+    - name: Read currently enabled auth methods
+      ansible.builtin.uri:
+        url: "{{ sg_identity_vault_addr }}/v1/sys/auth"
+      check_mode: false
+      register: sg_identity_auth_list
+
+    - name: Enable oidc, jwt and ldap auth (if not present)
+      ansible.builtin.uri:
+        url: "{{ sg_identity_vault_addr }}/v1/sys/auth/{{ item }}"
+        method: POST
+        body_format: json
+        body:
+          type: "{{ item }}"
+          description: "shift-gear people ({{ item }})"
+        status_code: [200, 204]
+      changed_when: true
+      loop: [oidc, jwt, ldap]
+      when: (item ~ '/') not in sg_identity_auth_list.json.data
+
+    # Re-read for accessors after potential enable
+    - name: Re-read auth methods for accessors
+      ansible.builtin.uri:
+        url: "{{ sg_identity_vault_addr }}/v1/sys/auth"
+      check_mode: false
+      register: sg_identity_auth_list
+
+    - name: Record mount accessors
+      ansible.builtin.set_fact:
+        sg_identity_accessor:
+          oidc: "{{ sg_identity_auth_list.json.data['oidc/'].accessor | default('') }}"
+          jwt: "{{ sg_identity_auth_list.json.data['jwt/'].accessor | default('') }}"
+          ldap: "{{ sg_identity_auth_list.json.data['ldap/'].accessor | default('') }}"
+
+    # ── OIDC config ───────────────────────────────────────────────────────────
+    - name: Read OIDC config
+      ansible.builtin.uri:
+        url: "{{ sg_identity_vault_addr }}/v1/auth/oidc/config"
+        status_code: [200, 404]
+      check_mode: false
+      register: sg_identity_oidc_cfg
+
+    - name: Write OIDC config when it differs
+      ansible.builtin.uri:
+        url: "{{ sg_identity_vault_addr }}/v1/auth/oidc/config"
+        method: POST
+        body_format: json
+        body:
+          oidc_discovery_url: "{{ sg_identity_keycloak_issuer }}"
+          # Use ingress CA for OIDC discovery (Keycloak TLS cert is signed by
+          # the project CA, which signed the ingress CA's trust chain).
+          oidc_discovery_ca_pem: "{{ sg_identity_ingress_ca_pem }}"
+          oidc_client_id: vault
+          oidc_client_secret: "{{ sg_identity_secrets_values.vault_client_secret }}"
+          default_role: visitor
+        status_code: [200, 204]
+      changed_when: true
+      when: >-
+        sg_identity_oidc_cfg.status == 404 or
+        sg_identity_oidc_cfg.json.data.oidc_discovery_url != sg_identity_keycloak_issuer or
+        sg_identity_oidc_cfg.json.data.oidc_client_id != 'vault' or
+        sg_identity_oidc_cfg.json.data.default_role != 'visitor' or
+        (sg_identity_oidc_cfg.json.data.oidc_discovery_ca_pem | default('') | trim) != (sg_identity_ingress_ca_pem | trim)
+
+    # ── JWT config ────────────────────────────────────────────────────────────
+    - name: Read JWT config
+      ansible.builtin.uri:
+        url: "{{ sg_identity_vault_addr }}/v1/auth/jwt/config"
+        status_code: [200, 404]
+      check_mode: false
+      register: sg_identity_jwt_cfg
+
+    - name: Write JWT config (JWKS from discovery — no client_id, accepts raw tokens)
+      ansible.builtin.uri:
+        url: "{{ sg_identity_vault_addr }}/v1/auth/jwt/config"
+        method: POST
+        body_format: json
+        body:
+          oidc_discovery_url: "{{ sg_identity_keycloak_issuer }}"
+          oidc_discovery_ca_pem: "{{ sg_identity_ingress_ca_pem }}"
+          bound_issuer: "{{ sg_identity_keycloak_issuer }}"
+          default_role: cli
+        status_code: [200, 204]
+      changed_when: true
+      when: >-
+        sg_identity_jwt_cfg.status == 404 or
+        sg_identity_jwt_cfg.json.data.oidc_discovery_url != sg_identity_keycloak_issuer or
+        sg_identity_jwt_cfg.json.data.bound_issuer != sg_identity_keycloak_issuer or
+        (sg_identity_jwt_cfg.json.data.oidc_discovery_ca_pem | default('') | trim) != (sg_identity_ingress_ca_pem | trim)
+
+    # ── Auth roles ────────────────────────────────────────────────────────────
+    - name: Define desired auth roles
+      ansible.builtin.set_fact:
+        sg_identity_auth_roles:
+          oidc/visitor:
+            role_type: oidc
+            user_claim: preferred_username
+            groups_claim: groups
+            bound_audiences: [vault]
+            oidc_scopes: [openid, profile, email]
+            allowed_redirect_uris: "{{ sg_identity_oidc_redirect_uris }}"
+            token_ttl: 1800
+            token_max_ttl: 7200
+          # Lab only: sg-cli id_tokens for identity-verify gate tests.
+          jwt/cli:
+            role_type: jwt
+            user_claim: preferred_username
+            groups_claim: groups
+            bound_audiences: [sg-cli]
+            token_ttl: 900
+            token_max_ttl: 900
+
+    - name: Read existing auth roles
+      ansible.builtin.uri:
+        url: "{{ sg_identity_vault_addr }}/v1/auth/{{ item.split('/')[0] }}/role/{{ item.split('/')[1] }}"
+        status_code: [200, 404]
+      check_mode: false
+      loop: "{{ sg_identity_auth_roles.keys() | list }}"
+      register: sg_identity_role_reads
+
+    - name: Write roles that are absent or differ
+      ansible.builtin.uri:
+        url: "{{ sg_identity_vault_addr }}/v1/auth/{{ item.item.split('/')[0] }}/role/{{ item.item.split('/')[1] }}"
+        method: POST
+        body_format: json
+        body: "{{ sg_identity_auth_roles[item.item] }}"
+        status_code: [200, 204]
+      changed_when: true
+      loop: "{{ sg_identity_role_reads.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: >-
+        item.status == 404 or
+        sg_identity_auth_roles[item.item].user_claim != item.json.data.user_claim or
+        sg_identity_auth_roles[item.item].groups_claim != item.json.data.groups_claim or
+        (sg_identity_auth_roles[item.item].bound_audiences | sort)
+          != (item.json.data.bound_audiences | default([], true) | sort) or
+        sg_identity_auth_roles[item.item].role_type != item.json.data.role_type
+
+    # ── LDAP config ───────────────────────────────────────────────────────────
+    - name: Read LDAP config
+      ansible.builtin.uri:
+        url: "{{ sg_identity_vault_addr }}/v1/auth/ldap/config"
+        status_code: [200, 404]
+      check_mode: false
+      register: sg_identity_ldap_cfg
+
+    - name: Define desired LDAP config
+      ansible.builtin.set_fact:
+        sg_identity_ldap_desired:
+          url: "{{ sg_identity_ldap_svc }}"
+          insecure_tls: true       # plain LDAP :1389, no TLS to the pod
+          starttls: false
+          binddn: "cn=admin,{{ sg_identity_base_dn }}"
+          userdn: "ou=people,{{ sg_identity_base_dn }}"
+          userattr: uid
+          groupdn: "ou=groups,{{ sg_identity_base_dn }}"
+          groupfilter: "(&(objectClass=groupOfNames)(member={{ '{{' }}.UserDN{{ '}}' }}))"
+          groupattr: cn
+          token_ttl: 1800
+          token_max_ttl: 7200
+
+    - name: Write LDAP config when it differs
+      ansible.builtin.uri:
+        url: "{{ sg_identity_vault_addr }}/v1/auth/ldap/config"
+        method: POST
+        body_format: json
+        body: >-
+          {{ sg_identity_ldap_desired
+             | combine({'bindpass': sg_identity_secrets_values.ldap_admin_password}) }}
+        status_code: [200, 204]
+      changed_when: true
+      when: >-
+        sg_identity_ldap_cfg.status == 404 or
+        sg_identity_ldap_cfg.json.data.url != sg_identity_ldap_desired.url or
+        sg_identity_ldap_cfg.json.data.binddn != sg_identity_ldap_desired.binddn or
+        sg_identity_ldap_cfg.json.data.userdn != sg_identity_ldap_desired.userdn or
+        sg_identity_ldap_cfg.json.data.groupdn != sg_identity_ldap_desired.groupdn or
+        sg_identity_ldap_cfg.json.data.groupfilter != sg_identity_ldap_desired.groupfilter
+
+    # ── External groups (one per directory group per mount) ───────────────────
+    # Identity groups that carry an actual policy (staff carries none).
+    - name: Build the list of policy-carrying groups
+      ansible.builtin.set_fact:
+        sg_identity_policy_groups: >-
+          {{ sg_identity_groups | dict2items
+             | selectattr('value', 'ne', '')
+             | list }}
+
+    - name: Read existing external groups
+      ansible.builtin.uri:
+        url: "{{ sg_identity_vault_addr }}/v1/identity/group/name/{{ item.0 }}-{{ item.1.key }}"
+        status_code: [200, 404]
+      check_mode: false
+      loop: "{{ ['oidc', 'jwt', 'ldap'] | product(sg_identity_policy_groups) | list }}"
+      loop_control:
+        label: "{{ item.0 }}-{{ item.1.key }}"
+      register: sg_identity_ext_groups
+
+    - name: Create or correct external groups
+      ansible.builtin.uri:
+        url: "{{ sg_identity_vault_addr }}/v1/identity/group/name/{{ item.item.0 }}-{{ item.item.1.key }}"
+        method: POST
+        body_format: json
+        body:
+          type: external
+          policies: ["{{ item.item.1.value }}"]
+          metadata:
+            source: shift-gear
+        status_code: [200, 204]
+      changed_when: true
+      loop: "{{ sg_identity_ext_groups.results }}"
+      loop_control:
+        label: "{{ item.item.0 }}-{{ item.item.1.key }}"
+      when: >-
+        item.status == 404 or
+        item.json.data.policies != [item.item.1.value]
+
+    # Re-read for ids (needed for alias creation)
+    - name: Re-read external groups for IDs
+      ansible.builtin.uri:
+        url: "{{ sg_identity_vault_addr }}/v1/identity/group/name/{{ item.0 }}-{{ item.1.key }}"
+      check_mode: false
+      loop: "{{ ['oidc', 'jwt', 'ldap'] | product(sg_identity_policy_groups) | list }}"
+      loop_control:
+        label: "{{ item.0 }}-{{ item.1.key }}"
+      register: sg_identity_ext_groups
+
+    - name: Alias each external group to its directory group name
+      ansible.builtin.uri:
+        url: "{{ sg_identity_vault_addr }}/v1/identity/group-alias"
+        method: POST
+        body_format: json
+        body:
+          name: "{{ item.item.1.key }}"
+          mount_accessor: "{{ sg_identity_accessor[item.item.0] }}"
+          canonical_id: "{{ item.json.data.id }}"
+        status_code: [200, 204]
+      changed_when: true
+      loop: "{{ sg_identity_ext_groups.results }}"
+      loop_control:
+        label: "{{ item.item.0 }}-{{ item.item.1.key }}"
+      # Create alias if absent; skip if already wired to the same name+accessor
+      when: >-
+        (item.json.data.alias | default({}, true)).name | default('') != item.item.1.key or
+        (item.json.data.alias | default({}, true)).mount_accessor | default('') != sg_identity_accessor[item.item.0]

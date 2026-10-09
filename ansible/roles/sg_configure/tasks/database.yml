@@ -1,0 +1,207 @@
+---
+# ansible/roles/sg_configure/tasks/database.yml
+# Vault database secrets engine: connection shiftgear (PostgreSQL), role
+# demo-reader (5m/10m TTL), rotate-root once (guarded by a marker file).
+# The vault_admin user is created idempotently in Postgres via k8s_exec.
+# Recovery: delete .build/db-rotate-root.done and rerun to force rotate-root.
+
+# ── Postgres: wait for pod, create vault_admin user idempotently ──────────────
+
+- name: Wait for the Postgres pod to be Running
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ sg_configure_kubeconfig }}"
+    api_version: v1
+    kind: Pod
+    namespace: sg-workloads
+    label_selectors:
+      - "app.kubernetes.io/name=postgres"
+    field_selectors:
+      - status.phase=Running
+  register: sg_configure_pg_pods
+  until: sg_configure_pg_pods.resources | length > 0
+  retries: 30
+  delay: 10
+
+- name: Record the Postgres pod name
+  ansible.builtin.set_fact:
+    sg_configure_pg_pod: "{{ sg_configure_pg_pods.resources[0].metadata.name }}"
+
+- name: Read what exists in Postgres (database, vault_admin, demo table)
+  kubernetes.core.k8s_exec:
+    kubeconfig: "{{ sg_configure_kubeconfig }}"
+    namespace: sg-workloads
+    pod: "{{ sg_configure_pg_pod }}"
+    command: >-
+      psql -U postgres -tA -c
+      "SELECT (SELECT count(*) FROM pg_database WHERE datname = 'shiftgear') || ',' ||
+              (SELECT count(*) FROM pg_roles WHERE rolname = 'vault_admin')"
+  register: sg_configure_pg_state
+  changed_when: false
+  failed_when: sg_configure_pg_state.rc | default(1) != 0
+  check_mode: false
+
+- name: Parse the Postgres state
+  ansible.builtin.set_fact:
+    sg_configure_pg_has_db: "{{ (sg_configure_pg_state.stdout | trim).split(',')[0] == '1' }}"
+    sg_configure_pg_has_admin: "{{ (sg_configure_pg_state.stdout | trim).split(',')[1] == '1' }}"
+
+- name: Create the shiftgear database (only when missing)
+  kubernetes.core.k8s_exec:
+    kubeconfig: "{{ sg_configure_kubeconfig }}"
+    namespace: sg-workloads
+    pod: "{{ sg_configure_pg_pod }}"
+    command: createdb -U postgres shiftgear
+  register: sg_configure_pg_createdb
+  when: not sg_configure_pg_has_db
+  changed_when: true
+  failed_when: sg_configure_pg_createdb.rc | default(1) != 0
+
+# The initial password is in the command (visible only inside the pod for
+# the duration of the call); Vault rotates it immediately with rotate-root.
+- name: Create the vault_admin role (only when missing)
+  kubernetes.core.k8s_exec:
+    kubeconfig: "{{ sg_configure_kubeconfig }}"
+    namespace: sg-workloads
+    pod: "{{ sg_configure_pg_pod }}"
+    command: >-
+      psql -U postgres -d shiftgear -v ON_ERROR_STOP=1 -c
+      "CREATE ROLE vault_admin WITH LOGIN CREATEROLE PASSWORD '{{ sg_configure_pg_password }}';
+       GRANT CONNECT ON DATABASE shiftgear TO vault_admin;"
+  register: sg_configure_pg_vault_admin
+  when: not sg_configure_pg_has_admin
+  changed_when: true
+  failed_when: sg_configure_pg_vault_admin.rc | default(1) != 0
+  no_log: true
+
+- name: Check for the demo table
+  kubernetes.core.k8s_exec:
+    kubeconfig: "{{ sg_configure_kubeconfig }}"
+    namespace: sg-workloads
+    pod: "{{ sg_configure_pg_pod }}"
+    command: psql -U postgres -d shiftgear -tA -c "SELECT to_regclass('public.demo') IS NOT NULL"
+  register: sg_configure_pg_demo_state
+  changed_when: false
+  failed_when: sg_configure_pg_demo_state.rc | default(1) != 0
+  check_mode: false
+
+- name: Create the demo table with its seed rows (only when missing)
+  kubernetes.core.k8s_exec:
+    kubeconfig: "{{ sg_configure_kubeconfig }}"
+    namespace: sg-workloads
+    pod: "{{ sg_configure_pg_pod }}"
+    command: >-
+      psql -U postgres -d shiftgear -v ON_ERROR_STOP=1 -c
+      "CREATE TABLE demo (key varchar, value varchar);
+       INSERT INTO demo(key, value) VALUES ('env', 'production'), ('version', '1.0.0');
+       GRANT SELECT ON demo TO vault_admin WITH GRANT OPTION;"
+  register: sg_configure_pg_demo
+  when: (sg_configure_pg_demo_state.stdout | trim) != 't'
+  changed_when: true
+  failed_when: sg_configure_pg_demo.rc | default(1) != 0
+
+# ── Vault database connection + role ─────────────────────────────────────────
+
+- name: Manage Vault database secrets engine
+  module_defaults:
+    ansible.builtin.uri:
+      ca_path: "{{ sg_configure_vault_ca }}"
+      headers:
+        X-Vault-Token: "{{ sg_vault_token }}"
+        X-Vault-Namespace: "shift-gear"
+  no_log: true
+  block:
+    - name: Read existing database connection config
+      ansible.builtin.uri:
+        url: "{{ sg_configure_vault_addr }}/v1/{{ sg_configure_db_mount }}/config/{{ sg_configure_db_connection }}"
+        status_code: [200, 404]
+      check_mode: false
+      register: sg_configure_db_conn_read
+
+    - name: Define desired database connection
+      ansible.builtin.set_fact:
+        sg_configure_db_conn_desired:
+          plugin_name: postgresql-database-plugin
+          connection_url: "{{ sg_configure_db_url }}"
+          username: vault_admin
+          allowed_roles: ["{{ sg_configure_db_role }}"]
+          verify_connection: true
+
+    - name: Write database connection when absent or host changed
+      ansible.builtin.uri:
+        url: "{{ sg_configure_vault_addr }}/v1/{{ sg_configure_db_mount }}/config/{{ sg_configure_db_connection }}"
+        method: POST
+        body_format: json
+        body: >-
+          {{ sg_configure_db_conn_desired
+             | combine({'password': sg_configure_pg_password}) }}
+        status_code: [200, 204]
+      changed_when: true
+      when: >-
+        sg_configure_db_conn_read.status == 404 or
+        sg_configure_db_conn_read.json.data.connection_details.connection_url != sg_configure_db_url
+
+    - name: Read demo-reader role
+      ansible.builtin.uri:
+        url: "{{ sg_configure_vault_addr }}/v1/{{ sg_configure_db_mount }}/roles/{{ sg_configure_db_role }}"
+        status_code: [200, 404]
+      check_mode: false
+      register: sg_configure_db_role_read
+
+    - name: Write demo-reader role when absent
+      ansible.builtin.uri:
+        url: "{{ sg_configure_vault_addr }}/v1/{{ sg_configure_db_mount }}/roles/{{ sg_configure_db_role }}"
+        method: POST
+        body_format: json
+        body:
+          db_name: "{{ sg_configure_db_connection }}"
+          creation_statements:
+            - "CREATE ROLE \"{{ '{{name}}' }}\" WITH LOGIN PASSWORD '{{ '{{password}}' }}' VALID UNTIL '{{ '{{expiration}}' }}';"
+            - "GRANT CONNECT ON DATABASE shiftgear TO \"{{ '{{name}}' }}\";"
+            - "GRANT SELECT ON demo TO \"{{ '{{name}}' }}\";"
+          revocation_statements:
+            - "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = '{{ '{{name}}' }}';"
+            - "REVOKE ALL ON demo FROM \"{{ '{{name}}' }}\";"
+            - "REVOKE CONNECT ON DATABASE shiftgear FROM \"{{ '{{name}}' }}\";"
+            - "DROP ROLE IF EXISTS \"{{ '{{name}}' }}\";"
+          default_ttl: "5m"
+          max_ttl: "10m"
+        status_code: [200, 204]
+      changed_when: true
+      when: sg_configure_db_role_read.status == 404
+
+# ── rotate-root (once, guarded by marker) ────────────────────────────────────
+# After rotate-root Vault is the only entity that knows vault_admin's password.
+# Recovery procedure (if the DB is recreated):
+#   1. Recreate vault_admin in Postgres with a known password
+#   2. rm .build/db-rotate-root.done
+#   3. Re-run ansible configure
+#   See docs/operations.md for the full recovery runbook.
+
+- name: Check rotate-root marker
+  ansible.builtin.stat:
+    path: "{{ sg_configure_db_rotate_marker }}"
+  register: sg_configure_rotate_marker
+  changed_when: false
+
+- name: Rotate vault_admin root password (once)
+  ansible.builtin.uri:
+    url: "{{ sg_configure_vault_addr }}/v1/{{ sg_configure_db_mount }}/rotate-root/{{ sg_configure_db_connection }}"
+    method: POST
+    ca_path: "{{ sg_configure_vault_ca }}"
+    headers:
+      X-Vault-Token: "{{ sg_vault_token }}"
+      X-Vault-Namespace: "shift-gear"
+    body_format: json
+    body: {}
+    status_code: [200, 204]
+  changed_when: true
+  when: not sg_configure_rotate_marker.stat.exists and not ansible_check_mode
+  no_log: true
+
+- name: Write rotate-root marker
+  ansible.builtin.file:
+    path: "{{ sg_configure_db_rotate_marker }}"
+    state: touch
+    mode: "0644"
+  changed_when: false
+  when: not sg_configure_rotate_marker.stat.exists and not ansible_check_mode

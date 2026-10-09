@@ -1,0 +1,18 @@
+# The only phase list. One phase per line: <tool> <name>.
+# Read by scripts/lab.sh, idempotency.sh, drift.sh, evidence.py (layers), the
+# automation digest and the console. tf = a Terraform root, ansible = a playbook.
+# There is NO ansible/site.yml — Ansible alone cannot run the full stack
+# because five phases are Terraform roots.
+tf      infra
+tf      foundation
+ansible prepare
+tf      workloads
+ansible seal-init
+tf      seal
+ansible agent
+ansible bootstrap
+tf      platform
+ansible identity
+ansible configure
+ansible ux
+ansible validate

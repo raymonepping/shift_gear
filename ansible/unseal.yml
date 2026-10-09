@@ -1,0 +1,55 @@
+---
+# ansible/unseal.yml — Emergency unseal for the seal Vault.
+# Used by: make unseal, scripts/down.sh up
+# The seal Vault uses Shamir 1/1 (demo grade, single operator).
+# The main cluster auto-unseals through the seal agent once the seal Vault is up.
+
+- name: Unseal — unseal the seal Vault with its single key
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Read infra contract
+      ansible.builtin.set_fact:
+        _sg_contract: "{{ lookup('file', playbook_dir + '/../.build/terraform/infra.json') | from_json }}"
+      failed_when: _sg_contract is not defined
+
+    - name: Set addresses
+      ansible.builtin.set_fact:
+        sg_vault_seal_addr: "https://vault-seal.{{ _sg_contract.cluster.apps_domain }}"
+        sg_ca_cert: "{{ playbook_dir }}/../.secrets/tls/pub/ca.pem"
+
+    - name: Read seal init material
+      ansible.builtin.set_fact:
+        sg_seal_init: "{{ lookup('file', playbook_dir + '/../.secrets/seal-init.json') | from_json }}"
+      no_log: true
+      failed_when: sg_seal_init is not defined
+
+    - name: Check seal Vault status
+      ansible.builtin.uri:
+        url: "{{ sg_vault_seal_addr }}/v1/sys/health"
+        method: GET
+        ca_path: "{{ sg_ca_cert }}"
+        status_code: [200, 429, 472, 501, 503]
+      register: sg_seal_health
+      changed_when: false
+
+    - name: Unseal seal Vault
+      ansible.builtin.uri:
+        url: "{{ sg_vault_seal_addr }}/v1/sys/unseal"
+        method: POST
+        body_format: json
+        body:
+          key: "{{ sg_seal_init.keys_base64[0] }}"
+        ca_path: "{{ sg_ca_cert }}"
+        status_code: 200
+      register: sg_unseal_result
+      no_log: true
+      when: sg_seal_health.json.sealed | default(true)
+      changed_when: not (sg_unseal_result.json.sealed | default(true))
+
+    - name: Assert seal Vault is unsealed
+      ansible.builtin.assert:
+        that: not (sg_seal_health.json.sealed | default(sg_unseal_result.json.sealed | default(true)))
+        fail_msg: "Seal Vault is still sealed — check .secrets/seal-init.json"
+        quiet: true

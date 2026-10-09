@@ -1,0 +1,10 @@
+---
+# ansible/roles/sg_ux/defaults/main.yml — the console phase (all prefixed sg_ux_).
+sg_ux_namespace: sg-app                       # Kubernetes namespace of the console
+sg_ux_kubeconfig: "{{ playbook_dir }}/../{{ infra_cluster.kubeconfig_path }}"
+sg_ux_source: "{{ playbook_dir }}/../ui"      # build context (ui/.dockerignore applies)
+sg_ux_stage: "{{ playbook_dir }}/../.cache/ui-build"   # staged context, uploaded by oc
+sg_ux_build_dir: "{{ playbook_dir }}/../.build"
+sg_ux_evidence_configmap: sg-evidence
+# Files synced into the ConfigMap (non-secret; scanned before every sync).
+sg_ux_evidence_files: [evidence.json, layers.json, validation.json, convergence.json]

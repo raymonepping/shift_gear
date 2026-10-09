@@ -1,0 +1,21 @@
+---
+# ansible/agent.yml — Phase: ansible agent
+# Mint AppRole secret-ids → Kubernetes Secrets, restart seal agent, prove agent.
+
+- name: Agent — seal-agent AppRole credentials, prove agent works
+  hosts: localhost
+  gather_facts: true   # ansible_date_time needed for credential rotation annotation
+
+  pre_tasks:
+    - name: Load infra contract
+      ansible.builtin.set_fact:
+        sg_tf_infra_contract: "{{ lookup('file', playbook_dir + '/../.build/terraform/infra.json') | from_json }}"
+      changed_when: false
+
+    - name: Set infra_cluster alias
+      ansible.builtin.set_fact:
+        infra_cluster: "{{ sg_tf_infra_contract.cluster }}"
+      changed_when: false
+
+  roles:
+    - role: sg_seal_agent

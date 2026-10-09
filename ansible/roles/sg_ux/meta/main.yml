@@ -1,0 +1,8 @@
+---
+# ansible/roles/sg_ux/meta/main.yml
+galaxy_info:
+  author: shift-gear
+  description: Build and deploy the Shift Gear UI/API and sync the evidence ConfigMap.
+  license: Apache-2.0
+  min_ansible_version: "2.17"
+dependencies: []

@@ -1,0 +1,34 @@
+---
+# ansible/identity-verify.yml — make identity-verify
+# Every persona logs in through all auth methods and receives exactly their
+# expected policies. Named authorisation checks enforce least-privilege.
+# Results written to .build/identity-verify.json. Token: sg-ansible-platform.
+
+- name: Identity-verify — every persona receives exactly their policies
+  hosts: localhost
+  gather_facts: false
+
+  pre_tasks:
+    - name: Load infra contract
+      ansible.builtin.set_fact:
+        sg_tf_infra_contract: "{{ lookup('file', playbook_dir + '/../.build/terraform/infra.json') | from_json }}"
+      changed_when: false
+
+    - name: Set infra_cluster alias
+      ansible.builtin.set_fact:
+        infra_cluster: "{{ sg_tf_infra_contract.cluster }}"
+      changed_when: false
+
+    - name: Read sg-ansible-platform bootstrap token
+      ansible.builtin.slurp:
+        src: "{{ playbook_dir }}/../.secrets/tokens/ansible-platform"
+      register: _sg_token_raw
+      no_log: true
+
+    - name: Set sg_vault_token fact
+      ansible.builtin.set_fact:
+        sg_vault_token: "{{ _sg_token_raw.content | b64decode | trim }}"
+      no_log: true
+
+  roles:
+    - role: sg_identity_verify

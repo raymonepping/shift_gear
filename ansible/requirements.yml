@@ -1,0 +1,14 @@
+---
+# ansible/requirements.yml — pinned collections for Shift Gear, installed into
+# .cache/ansible/collections by scripts/ansible-deps.sh (make deps).
+# Pins match ansible-core 2.21 (the versions golden_ticket runs, plus
+# kubernetes.core at the version the Homebrew bundle ships).
+collections:
+  - name: kubernetes.core
+    version: 6.5.0
+  - name: community.general
+    version: 13.3.0
+  - name: community.crypto
+    version: 3.3.0
+  - name: ansible.posix
+    version: 2.2.2

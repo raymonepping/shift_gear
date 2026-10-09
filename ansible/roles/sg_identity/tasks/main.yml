@@ -1,0 +1,22 @@
+---
+# ansible/roles/sg_identity/tasks/main.yml
+# Dispatches sub-tasks in order:
+#   1. secrets  — generate-once passwords in Vault KV; write Kubernetes Secrets
+#   2. directory — OUs, users, passwords, groups in OpenLDAP via k8s_exec Job
+#   3. keycloak  — realm shift-gear, LDAP federation, OIDC clients
+#   4. vault_auth — OIDC/JWT/LDAP auth methods, roles, external groups + aliases
+
+- name: Identity secrets — generate/read from Vault KV and write Kubernetes Secrets
+  ansible.builtin.include_tasks: secrets.yml
+
+- name: OpenLDAP image — build in-cluster when the build context changed
+  ansible.builtin.include_tasks: image.yml
+
+- name: Directory content — OUs, people, passwords and groups in OpenLDAP
+  ansible.builtin.include_tasks: directory.yml
+
+- name: Keycloak — realm shift-gear, LDAP federation and OIDC clients
+  ansible.builtin.include_tasks: keycloak.yml
+
+- name: Vault auth — OIDC / JWT / LDAP methods, roles and external groups
+  ansible.builtin.include_tasks: vault_auth.yml

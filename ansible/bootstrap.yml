@@ -1,0 +1,21 @@
+---
+# ansible/bootstrap.yml — Phase: ansible bootstrap
+# Init the cluster (recovery keys), raft join check, platform bootstrap tokens.
+
+- name: Bootstrap — cluster init, raft join, platform bootstrap tokens
+  hosts: localhost
+  gather_facts: false
+
+  pre_tasks:
+    - name: Load infra contract
+      ansible.builtin.set_fact:
+        sg_tf_infra_contract: "{{ lookup('file', playbook_dir + '/../.build/terraform/infra.json') | from_json }}"
+      changed_when: false
+
+    - name: Set infra_cluster alias
+      ansible.builtin.set_fact:
+        infra_cluster: "{{ sg_tf_infra_contract.cluster }}"
+      changed_when: false
+
+  roles:
+    - role: sg_bootstrap

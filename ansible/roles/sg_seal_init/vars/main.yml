@@ -1,0 +1,17 @@
+---
+# ansible/roles/sg_seal_init/vars/main.yml
+# Variables for the seal init role. All vars use the sg_seal_init_ prefix.
+
+sg_seal_init_path: "{{ playbook_dir }}/../.secrets/seal-init.json"
+sg_seal_init_vault_addr: "https://vault-seal.{{ infra_cluster.apps_domain }}"
+sg_seal_init_vault_ca: "{{ playbook_dir }}/../.secrets/tls/pub/ca.pem"
+sg_seal_init_tokens_dir: "{{ playbook_dir }}/../.secrets/tokens"
+
+sg_seal_init_key_shares: 1
+sg_seal_init_key_threshold: 1
+
+sg_seal_init_token_period: "24h"
+
+sg_seal_init_bootstrap_tokens:
+  - {policy: "sg-tf-seal", file: "tf-seal"}
+  - {policy: "sg-ansible-seal", file: "ansible-seal"}

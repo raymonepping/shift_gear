@@ -1,0 +1,190 @@
+---
+# ansible/roles/sg_bootstrap/tasks/main.yml
+# Bootstrap phase: initialise the cluster (recovery keys), wait for all 3 nodes
+# to auto-unseal through the seal agent, confirm 3 Raft voters, write platform
+# bootstrap policies, issue sg-tf-platform + sg-ansible-platform tokens.
+#
+# Ported from golden_ticket/ansible/roles/vault_bootstrap/tasks/cluster.yml
+# + tokens.yml, adapted for OpenShift:
+# - Before init no node is active, so the `vault` Route (→ vault-active) has no
+#   backend and the router closes the connection. Pre-init steps and per-pod
+#   checks therefore use the in-pod CLI through the Kubernetes API
+#   (kubernetes.core.k8s_exec); the pod's VAULT_CACERT trusts its listener.
+# - Once vault-0 is unsealed and active, everything else goes through the Route.
+#   Pod IPs and *.vault-internal names are not reachable from the controller.
+# No SSH. All variables use the sg_bootstrap_ prefix (ansible-lint production).
+
+- name: Ensure tokens directory exists (0700)
+  ansible.builtin.file:
+    path: "{{ sg_bootstrap_tokens_dir }}"
+    state: directory
+    mode: "0700"
+
+- name: Read vault-0's status with the in-pod CLI
+  kubernetes.core.k8s_exec:
+    namespace: "{{ sg_bootstrap_namespace }}"
+    pod: vault-0
+    container: vault
+    command: vault status -format=json
+  register: sg_bootstrap_v0
+  # vault status exits 2 while sealed; the JSON is what matters.
+  until: (sg_bootstrap_v0.stdout | default('')) is search('"type"')
+  retries: 60
+  delay: 5
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: Parse vault-0's status
+  ansible.builtin.set_fact:
+    sg_bootstrap_leader_status: "{{ sg_bootstrap_v0.stdout | from_json }}"
+
+- name: Check for existing cluster init material
+  ansible.builtin.stat:
+    path: "{{ sg_bootstrap_init_path }}"
+  register: sg_bootstrap_init_file
+
+- name: Guard — init state must match material on disk
+  ansible.builtin.assert:
+    that: sg_bootstrap_leader_status.initialized == sg_bootstrap_init_file.stat.exists
+    fail_msg: >-
+      Cluster initialized={{ sg_bootstrap_leader_status.initialized }} but
+      {{ sg_bootstrap_init_path }} exists={{ sg_bootstrap_init_file.stat.exists }}.
+      Restore the correct file; it is never overwritten.
+    quiet: true
+
+- name: Require transit seal type before init
+  ansible.builtin.assert:
+    that: sg_bootstrap_leader_status.type == 'transit'
+    fail_msg: >-
+      vault-0 reports seal type {{ sg_bootstrap_leader_status.type }},
+      expected transit. Is the seal agent running? Run make agent.
+    quiet: true
+
+- name: Initialise the cluster exactly once
+  when: not sg_bootstrap_leader_status.initialized
+  no_log: true
+  block:
+    - name: Initialise with recovery keys (in-pod CLI)
+      kubernetes.core.k8s_exec:
+        namespace: "{{ sg_bootstrap_namespace }}"
+        pod: vault-0
+        container: vault
+        command: >-
+          vault operator init -format=json
+          -recovery-shares={{ sg_bootstrap_recovery_shares | int }}
+          -recovery-threshold={{ sg_bootstrap_recovery_threshold | int }}
+      register: sg_bootstrap_init_result
+      changed_when: true
+      failed_when: sg_bootstrap_init_result.rc | default(1) != 0
+
+    - name: Persist cluster init material (0600)
+      ansible.builtin.copy:
+        content: "{{ sg_bootstrap_init_result.stdout | from_json | to_nice_json }}\n"
+        dest: "{{ sg_bootstrap_init_path }}"
+        mode: "0600"
+      diff: false
+
+- name: Load cluster init material
+  ansible.builtin.set_fact:
+    sg_bootstrap_init: "{{ lookup('file', sg_bootstrap_init_path) | from_json }}"
+  no_log: true
+  when: not ansible_check_mode or sg_bootstrap_init_file.stat.exists
+
+- name: Wait for the active node to answer through the Route
+  ansible.builtin.uri:
+    url: "{{ sg_bootstrap_leader_addr }}/v1/sys/seal-status"
+    ca_path: "{{ sg_bootstrap_vault_ca }}"
+  register: sg_bootstrap_leader_unsealed
+  until: >-
+    sg_bootstrap_leader_unsealed.json.initialized | default(false) and
+    not sg_bootstrap_leader_unsealed.json.sealed | default(true)
+  retries: 60
+  delay: 5
+  check_mode: false
+
+- name: Wait for vault-1 and vault-2 to join and unseal (in-pod CLI)
+  kubernetes.core.k8s_exec:
+    namespace: "{{ sg_bootstrap_namespace }}"
+    pod: "vault-{{ item }}"
+    container: vault
+    command: vault status -format=json
+  loop: [1, 2]
+  register: sg_bootstrap_follower_status
+  until: >-
+    (sg_bootstrap_follower_status.stdout | default('')) is search('"type"') and
+    (sg_bootstrap_follower_status.stdout | from_json).initialized and
+    not (sg_bootstrap_follower_status.stdout | from_json).sealed
+  retries: 40
+  delay: 5
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: Require all followers initialised and unsealed
+  ansible.builtin.assert:
+    that: >-
+      sg_bootstrap_follower_status.results
+      | map(attribute='stdout') | map('from_json')
+      | selectattr('initialized') | rejectattr('sealed') | list | length == 2
+    fail_msg: >-
+      Not all follower nodes are initialised and unsealed.
+      Check the seal agent with make agent.
+    quiet: true
+  when: not ansible_check_mode
+
+- name: Bootstrap platform tokens (through the Route, which reaches the active node)
+  ansible.builtin.include_tasks: tokens.yml
+  vars:
+    bt_addr: "{{ sg_bootstrap_leader_addr }}"
+    bt_root_token: "{{ sg_bootstrap_init.root_token }}"
+    bt_tokens: "{{ sg_bootstrap_platform_tokens }}"
+    bt_ca: "{{ sg_bootstrap_vault_ca }}"
+    bt_tokens_dir: "{{ sg_bootstrap_tokens_dir }}"
+    bootstrap_token_period: "{{ sg_bootstrap_token_period }}"
+  when: sg_bootstrap_init is defined
+
+- name: Read Raft configuration
+  ansible.builtin.uri:
+    url: "{{ sg_bootstrap_leader_addr }}/v1/sys/storage/raft/configuration"
+    ca_path: "{{ sg_bootstrap_vault_ca }}"
+    headers:
+      X-Vault-Token: "{{ lookup('file', sg_bootstrap_tokens_dir ~ '/ansible-platform') | trim }}"
+  register: sg_bootstrap_raft
+  until: >-
+    sg_bootstrap_raft.json.data.config.servers
+    | selectattr('voter', 'equalto', true) | list | length == 3
+  retries: 20
+  delay: 5
+  check_mode: false
+  no_log: true
+  when: sg_bootstrap_init is defined
+
+- name: Assert 3 Raft voters
+  ansible.builtin.assert:
+    that: >-
+      sg_bootstrap_raft.json.data.config.servers
+      | selectattr('voter', 'equalto', true) | list | length == 3
+    fail_msg: "The cluster does not have 3 Raft voters."
+    quiet: true
+  when: sg_bootstrap_raft is not skipped
+
+- name: Read each Vault pod's environment
+  kubernetes.core.k8s_exec:
+    namespace: "{{ sg_bootstrap_namespace }}"
+    pod: "{{ item }}"
+    container: vault
+    command: env
+  loop: [vault-0, vault-1, vault-2]
+  register: sg_bootstrap_env_check
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Assert no Vault pod holds a seal token (no VAULT_TOKEN in any environment)
+  ansible.builtin.assert:
+    that: >-
+      sg_bootstrap_env_check.results | map(attribute='stdout')
+      | select('search', '(?m)^VAULT_TOKEN=') | list | length == 0
+    fail_msg: "A Vault pod has VAULT_TOKEN in its environment — the seal chain must hold no token on the cluster."
+    quiet: true

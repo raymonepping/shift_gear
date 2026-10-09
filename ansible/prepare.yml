@@ -1,0 +1,33 @@
+---
+# ansible/prepare.yml — Phase: ansible prepare
+# Responsibilities:
+#   - Generate project CA + TLS certificates (scripts/tls.sh)
+#   - Create Kubernetes Secrets: vault-tls, vault-seal-tls, seal-agent-tls,
+#     vault-license (sg-vault-seal and sg-vault), ConfigMap sg-ca (all namespaces)
+#   - Wait for VSO CSV to reach Succeeded (lesson 18)
+#   - Changed only when a certificate or Secret really changes
+
+- name: Prepare — TLS, licence Secrets, CA ConfigMaps, VSO CSV gate
+  hosts: localhost
+  gather_facts: false
+
+  pre_tasks:
+    - name: Assert infra outputs exist
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/../.build/terraform/infra.json"
+      register: _sg_infra_check
+      failed_when: not _sg_infra_check.stat.exists
+      changed_when: false
+
+    - name: Load infra contract
+      ansible.builtin.set_fact:
+        sg_tf_infra_contract: "{{ lookup('file', playbook_dir + '/../.build/terraform/infra.json') | from_json }}"
+      changed_when: false
+
+    - name: Set infra_cluster alias (used by all roles)
+      ansible.builtin.set_fact:
+        infra_cluster: "{{ sg_tf_infra_contract.cluster }}"
+      changed_when: false
+
+  roles:
+    - role: sg_prepare

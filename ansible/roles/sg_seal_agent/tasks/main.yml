@@ -1,0 +1,318 @@
+---
+# ansible/roles/sg_seal_agent/tasks/main.yml
+# Agent phase: mint AppRole secret-ids → Kubernetes Secrets; restart agent;
+# prove the agent from a Vault pod network position.
+#
+# Uses sg-ansible-seal token (read by tf-run.sh into VAULT_TOKEN; the play
+# sets it via vault_token_file).
+# Ported from golden_ticket/ansible/roles/seal_agent/tasks/seal_vault.yml,
+# adapted for Kubernetes Secrets instead of files on a VM.
+#
+# Idempotency:
+#   - Checks if existing secret-ids in Vault Secrets are still valid
+#   - Mints new ones only when they do not exist or are invalid
+#   - Restarting the Deployment is idempotent (only when credentials changed)
+
+- name: Set role variables
+  ansible.builtin.set_fact:
+    sg_seal_agent_vault_addr: "https://vault-seal.{{ infra_cluster.apps_domain }}"
+    sg_seal_agent_vault_ca: "{{ playbook_dir }}/../.secrets/tls/pub/ca.pem"
+    sg_seal_agent_tokens_dir: "{{ playbook_dir }}/../.secrets/tokens"
+
+- name: Load sg-ansible-seal token
+  ansible.builtin.set_fact:
+    sg_seal_agent_ansible_token: "{{ lookup('file', sg_seal_agent_tokens_dir ~ '/ansible-seal') | trim }}"
+  no_log: true
+
+- name: Read role-ids for seal-autounseal and seal-rotator
+  ansible.builtin.uri:
+    url: "{{ sg_seal_agent_vault_addr }}/v1/auth/approle/role/{{ item }}/role-id"
+    ca_path: "{{ sg_seal_agent_vault_ca }}"
+    headers:
+      X-Vault-Token: "{{ sg_seal_agent_ansible_token }}"
+  loop:
+    - sg-seal-autounseal
+    - sg-seal-rotator
+  register: sg_seal_agent_role_ids
+  check_mode: false
+  no_log: true
+
+- name: Store role-ids as facts
+  ansible.builtin.set_fact:
+    sg_seal_agent_autounseal_role_id: "{{ sg_seal_agent_role_ids.results[0].json.data.role_id }}"
+    sg_seal_agent_rotator_role_id: "{{ sg_seal_agent_role_ids.results[1].json.data.role_id }}"
+  no_log: true
+
+# ── Check whether existing secret-ids are still valid ─────────────────────────
+- name: Read seal-agent-approle Secret (if it exists)
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: seal-agent-approle
+    namespace: sg-vault-seal
+  register: sg_seal_agent_approle_secret
+  check_mode: false
+  no_log: true
+
+- name: Read seal-rotator-approle Secret (if it exists)
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: seal-rotator-approle
+    namespace: sg-vault-seal
+  register: sg_seal_agent_rotator_approle_secret
+  check_mode: false
+  no_log: true
+
+- name: Derive existing secret-id accessors from Secrets
+  ansible.builtin.set_fact:
+    sg_seal_agent_existing_secret_id: >-
+      {{ (sg_seal_agent_approle_secret.resources[0].data['secret-id'] | default('') | b64decode | trim)
+         if sg_seal_agent_approle_secret.resources | length > 0 else '' }}
+    sg_seal_agent_rotator_existing_secret_id: >-
+      {{ (sg_seal_agent_rotator_approle_secret.resources[0].data['secret-id'] | default('') | b64decode | trim)
+         if sg_seal_agent_rotator_approle_secret.resources | length > 0 else '' }}
+  no_log: true
+
+# Check whether each existing secret-id is still alive in Vault.
+- name: Check seal-agent secret-id validity
+  ansible.builtin.uri:
+    url: "{{ sg_seal_agent_vault_addr }}/v1/auth/approle/role/sg-seal-autounseal/secret-id/lookup"
+    ca_path: "{{ sg_seal_agent_vault_ca }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ sg_seal_agent_ansible_token }}"
+    body_format: json
+    body:
+      secret_id: "{{ sg_seal_agent_existing_secret_id }}"
+    status_code: [200, 404]
+  register: sg_seal_agent_secret_id_check
+  check_mode: false
+  no_log: true
+  when: sg_seal_agent_existing_secret_id | length > 0
+
+- name: Check seal-rotator secret-id validity
+  ansible.builtin.uri:
+    url: "{{ sg_seal_agent_vault_addr }}/v1/auth/approle/role/sg-seal-rotator/secret-id/lookup"
+    ca_path: "{{ sg_seal_agent_vault_ca }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ sg_seal_agent_ansible_token }}"
+    body_format: json
+    body:
+      secret_id: "{{ sg_seal_agent_rotator_existing_secret_id }}"
+    status_code: [200, 404]
+  register: sg_seal_agent_rotator_secret_id_check
+  check_mode: false
+  no_log: true
+  when: sg_seal_agent_rotator_existing_secret_id | length > 0
+
+- name: Determine whether new secret-ids are needed
+  ansible.builtin.set_fact:
+    sg_seal_agent_needs_new_secret_id: >-
+      {{ sg_seal_agent_existing_secret_id | length == 0 or
+         (sg_seal_agent_secret_id_check is defined and sg_seal_agent_secret_id_check.status == 404) }}
+    sg_seal_agent_rotator_needs_new_secret_id: >-
+      {{ sg_seal_agent_rotator_existing_secret_id | length == 0 or
+         (sg_seal_agent_rotator_secret_id_check is defined and sg_seal_agent_rotator_secret_id_check.status == 404) }}
+
+# ── Mint new secret-ids where needed ──────────────────────────────────────────
+- name: Mint seal-agent secret-id
+  ansible.builtin.uri:
+    url: "{{ sg_seal_agent_vault_addr }}/v1/auth/approle/role/sg-seal-autounseal/secret-id"
+    ca_path: "{{ sg_seal_agent_vault_ca }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ sg_seal_agent_ansible_token }}"
+    body_format: json
+    body:
+      metadata: '{"by":"sg-ansible-seal"}'
+  register: sg_seal_agent_new_secret_id
+  changed_when: true
+  no_log: true
+  when: sg_seal_agent_needs_new_secret_id | bool
+
+- name: Mint seal-rotator secret-id
+  ansible.builtin.uri:
+    url: "{{ sg_seal_agent_vault_addr }}/v1/auth/approle/role/sg-seal-rotator/secret-id"
+    ca_path: "{{ sg_seal_agent_vault_ca }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ sg_seal_agent_ansible_token }}"
+    body_format: json
+    body:
+      metadata: '{"by":"sg-ansible-seal"}'
+  register: sg_seal_agent_rotator_new_secret_id
+  changed_when: true
+  no_log: true
+  when: sg_seal_agent_rotator_needs_new_secret_id | bool
+
+# ── Write Kubernetes Secrets ───────────────────────────────────────────────────
+- name: Write seal-agent-approle Secret (role-id + secret-id)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: seal-agent-approle
+        namespace: sg-vault-seal
+        labels:
+          app.kubernetes.io/part-of: shift-gear
+          app.kubernetes.io/managed-by: ansible
+      type: Opaque
+      stringData:
+        role-id: "{{ sg_seal_agent_autounseal_role_id }}"
+        secret-id: "{{ sg_seal_agent_new_secret_id.json.data.secret_id
+                        if sg_seal_agent_needs_new_secret_id | bool
+                        else sg_seal_agent_existing_secret_id }}"
+  no_log: true
+  diff: false
+  when: sg_seal_agent_needs_new_secret_id | bool
+
+- name: Write seal-rotator-approle Secret (role-id + secret-id)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: seal-rotator-approle
+        namespace: sg-vault-seal
+        labels:
+          app.kubernetes.io/part-of: shift-gear
+          app.kubernetes.io/managed-by: ansible
+      type: Opaque
+      stringData:
+        role-id: "{{ sg_seal_agent_rotator_role_id }}"
+        secret-id: "{{ sg_seal_agent_rotator_new_secret_id.json.data.secret_id
+                        if sg_seal_agent_rotator_needs_new_secret_id | bool
+                        else sg_seal_agent_rotator_existing_secret_id }}"
+  no_log: true
+  diff: false
+  when: sg_seal_agent_rotator_needs_new_secret_id | bool
+
+# ── Restart the agent Deployment when credentials changed ─────────────────────
+- name: Restart seal-agent Deployment to pick up new credentials
+  kubernetes.core.k8s:
+    api_version: apps/v1
+    kind: Deployment
+    name: seal-agent
+    namespace: sg-vault-seal
+    definition:
+      spec:
+        template:
+          metadata:
+            annotations:
+              shift-gear/credentials-rotated: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+  when: sg_seal_agent_needs_new_secret_id | bool or sg_seal_agent_rotator_needs_new_secret_id | bool
+
+# ── Wait for the agent to hold a token ────────────────────────────────────────
+- name: Wait for the seal agent pod to be running
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: sg-vault-seal
+    label_selectors:
+      - "app.kubernetes.io/name=seal-agent"
+    field_selectors:
+      - "status.phase=Running"
+  register: sg_seal_agent_pods
+  until: sg_seal_agent_pods.resources | length > 0
+  retries: 40
+  delay: 5
+  check_mode: false
+
+- name: Prove the agent answers its mTLS listener (transit encrypt test)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: sg-agent-probe
+        namespace: sg-vault
+        labels:
+          app.kubernetes.io/name: vault
+          app.kubernetes.io/part-of: shift-gear
+      spec:
+        restartPolicy: Never
+        serviceAccountName: vault
+        securityContext:
+          runAsNonRoot: true
+          seccompProfile:
+            type: RuntimeDefault
+        containers:
+          - name: probe
+            image: "docker.io/hashicorp/vault-enterprise:2.1.0-ent@sha256:12c3ac1469d11da17747927128ed11bce825a012d3ce13b066d0442d0105df0a"
+            command:
+              - /bin/sh
+              - -c
+              - |
+                vault write -address=https://seal-agent.sg-vault-seal.svc:8200 \
+                  -ca-cert=/vault/userconfig/sg-ca/ca.pem \
+                  -client-cert=/vault/userconfig/vault-tls/tls.crt \
+                  -client-key=/vault/userconfig/vault-tls/tls.key \
+                  transit/encrypt/autounseal \
+                  plaintext="$(echo 'shift-gear-probe' | base64)" && \
+                echo "AGENT_PROBE_PASS" || echo "AGENT_PROBE_FAIL"
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests: { cpu: "10m", memory: "32Mi" }
+              limits: { memory: "64Mi" }
+            volumeMounts:
+              - name: vault-tls
+                mountPath: /vault/userconfig/vault-tls
+                readOnly: true
+              - name: sg-ca
+                mountPath: /vault/userconfig/sg-ca
+                readOnly: true
+        volumes:
+          - name: vault-tls
+            secret:
+              secretName: vault-tls
+          - name: sg-ca
+            configMap:
+              name: sg-ca
+  register: sg_seal_agent_probe_pod
+  when: not ansible_check_mode
+  # A short-lived read-only proof pod: creating and removing it changes no
+  # configuration, so a re-run stays changed=0.
+  changed_when: false
+
+- name: Wait for probe pod to complete
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    name: sg-agent-probe
+    namespace: sg-vault
+  register: sg_seal_agent_probe_result
+  until: >-
+    sg_seal_agent_probe_result.resources | length > 0 and
+    sg_seal_agent_probe_result.resources[0].status.phase in ['Succeeded', 'Failed']
+  retries: 30
+  delay: 5
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: Assert probe pod succeeded
+  ansible.builtin.assert:
+    that: sg_seal_agent_probe_result.resources[0].status.phase == 'Succeeded'
+    fail_msg: "Seal agent probe pod failed — agent cannot proxy transit/encrypt"
+    quiet: true
+  when: not ansible_check_mode and sg_seal_agent_probe_result is defined
+
+- name: Clean up probe pod
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Pod
+    name: sg-agent-probe
+    namespace: sg-vault
+  when: not ansible_check_mode
+  # A short-lived read-only proof pod: creating and removing it changes no
+  # configuration, so a re-run stays changed=0.
+  changed_when: false

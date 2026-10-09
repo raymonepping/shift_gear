@@ -1,0 +1,94 @@
+# deploy/vault-seal/values.yaml
+# Helm values — seal Vault (release `vault-seal`, namespace sg-vault-seal).
+#
+# The root of trust: a 1-node Vault Enterprise whose only job is the Transit
+# key `autounseal` that unseals the main cluster in sg-vault. It is itself
+# Shamir-sealed (1 share, threshold 1 — demo grade, single operator; a
+# production deployment would use 3/5). Unsealed by `make unseal` from
+# .secrets/seal-init.json.
+#
+# Lessons applied:
+#   - global.openshift: true (lesson from red_doors)
+#   - readiness accepts sealed/uninit so Terraform can wait on the release
+#   - no seal token anywhere; the cluster unseals through the seal agent
+#   - arm64 digest pinned (lesson 5 from red_doors)
+global:
+  openshift: true
+  tlsDisable: false
+
+injector:
+  enabled: false
+
+server:
+  image:
+    repository: docker.io/hashicorp/vault-enterprise
+    # arm64 digest verified: oc image info --show-multiarch
+    # amd64+arm64 manifest list; CRC on Apple Silicon is arm64
+    tag: "2.1.0-ent@sha256:12c3ac1469d11da17747927128ed11bce825a012d3ce13b066d0442d0105df0a"
+
+  enterpriseLicense:
+    secretName: vault-license
+    secretKey: license
+
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 512Mi }
+
+  # In-pod CLI talks TLS to its own listener using the project CA.
+  extraEnvironmentVars:
+    VAULT_CACERT: /vault/userconfig/vault-seal-tls/ca.crt
+
+  extraVolumes:
+    - type: secret
+      name: vault-seal-tls
+
+  readinessProbe:
+    enabled: true
+    # HTTPS health check — accepts sealed and uninitialised so the Helm release
+    # can mark the pod ready even before `ansible seal-init` runs.
+    path: "/v1/sys/health?standbyok=true&sealedcode=204&uninitcode=204"
+  livenessProbe:
+    enabled: false
+
+  dataStorage:
+    enabled: true
+    size: 1Gi
+  auditStorage:
+    enabled: false   # file audit device writes to stdout; socket device added in prompt 07
+
+  # Single-node CRC: no anti-affinity needed for one replica. Clear the chart
+  # default so it cannot become a scheduling constraint.
+  affinity: ""
+
+  route:
+    enabled: false   # Route vault-seal is managed by terraform/foundation; chart route disabled
+
+  standalone:
+    enabled: true
+    config: |
+      ui = false
+      log_level = "info"
+
+      listener "tcp" {
+        address         = "[::]:8200"
+        cluster_address = "[::]:8201"
+        tls_cert_file   = "/vault/userconfig/vault-seal-tls/tls.crt"
+        tls_key_file    = "/vault/userconfig/vault-seal-tls/tls.key"
+        # tls_client_ca_file not set: operator and automation access the seal
+        # Vault over its passthrough Route with server-side TLS only; the mTLS
+        # requirement is on the seal AGENT's listener, not the seal Vault itself.
+      }
+
+      storage "raft" {
+        path    = "/vault/data"
+        node_id = "vault-seal-0"
+      }
+
+      api_addr     = "https://vault-seal.sg-vault-seal.svc:8200"
+      cluster_addr = "https://vault-seal-0.vault-seal-internal:8201"
+
+  ha:
+    enabled: false
+
+ui:
+  enabled: false

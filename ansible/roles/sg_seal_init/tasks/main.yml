@@ -1,0 +1,113 @@
+---
+# ansible/roles/sg_seal_init/tasks/main.yml
+# Seal init phase: initialise and unseal the seal Vault (1/1 Shamir), write
+# the two bootstrap policies and issue sg-tf-seal + sg-ansible-seal tokens.
+#
+# Ported from golden_ticket/ansible/roles/vault_bootstrap/tasks/seal.yml
+# and tokens.yml, adapted for OpenShift Routes (no SSH).
+# Every task touching keys or tokens is no_log.
+#
+# One share / threshold 1: demo grade, single operator.
+# A production deployment would use at least 3/5 and store shares off-site.
+
+- name: Ensure tokens directory exists (0700)
+  ansible.builtin.file:
+    path: "{{ sg_seal_init_tokens_dir }}"
+    state: directory
+    mode: "0700"
+
+- name: Wait for the seal Vault API
+  ansible.builtin.uri:
+    url: "{{ sg_seal_init_vault_addr }}/v1/sys/seal-status"
+    ca_path: "{{ sg_seal_init_vault_ca }}"
+  register: sg_seal_init_status
+  until: sg_seal_init_status.status == 200
+  retries: 60
+  delay: 3
+  check_mode: false
+
+- name: Check for existing seal init material
+  ansible.builtin.stat:
+    path: "{{ sg_seal_init_path }}"
+  register: sg_seal_init_file
+
+- name: Guard — init state must match material on disk
+  ansible.builtin.assert:
+    that: sg_seal_init_status.json.initialized == sg_seal_init_file.stat.exists
+    fail_msg: >-
+      Seal Vault initialized={{ sg_seal_init_status.json.initialized }} but
+      {{ sg_seal_init_path }} exists={{ sg_seal_init_file.stat.exists }}.
+      Restore the correct file; it is never overwritten.
+    quiet: true
+
+- name: Initialise the seal Vault exactly once
+  when: not sg_seal_init_status.json.initialized
+  no_log: true
+  block:
+    - name: Initialise the seal Vault with Shamir shares
+      ansible.builtin.uri:
+        url: "{{ sg_seal_init_vault_addr }}/v1/sys/init"
+        ca_path: "{{ sg_seal_init_vault_ca }}"
+        method: PUT
+        body_format: json
+        body:
+          secret_shares: "{{ sg_seal_init_key_shares | int }}"
+          secret_threshold: "{{ sg_seal_init_key_threshold | int }}"
+      register: sg_seal_init_result
+      changed_when: true
+
+    - name: Persist seal init material (0600)
+      ansible.builtin.copy:
+        content: "{{ sg_seal_init_result.json | to_nice_json }}\n"
+        dest: "{{ sg_seal_init_path }}"
+        mode: "0600"
+      diff: false
+
+- name: Load seal init material
+  ansible.builtin.set_fact:
+    sg_seal_init_data: "{{ lookup('file', sg_seal_init_path) | from_json }}"
+  no_log: true
+  when: sg_seal_init_file.stat.exists or (sg_seal_init_result is defined)
+
+- name: Re-check seal status (may have been sealed before this run)
+  ansible.builtin.uri:
+    url: "{{ sg_seal_init_vault_addr }}/v1/sys/seal-status"
+    ca_path: "{{ sg_seal_init_vault_ca }}"
+  register: sg_seal_init_current_status
+  check_mode: false
+
+- name: Unseal the seal Vault
+  ansible.builtin.uri:
+    url: "{{ sg_seal_init_vault_addr }}/v1/sys/unseal"
+    ca_path: "{{ sg_seal_init_vault_ca }}"
+    method: PUT
+    body_format: json
+    body:
+      key: "{{ sg_seal_init_data.keys_base64[item | int] }}"
+  loop: "{{ range(0, sg_seal_init_key_threshold | int) | list }}"
+  no_log: true
+  changed_when: true
+  when:
+    - sg_seal_init_data is defined
+    - sg_seal_init_current_status.json.sealed | bool
+
+- name: Wait for the seal Vault to be active
+  ansible.builtin.uri:
+    url: "{{ sg_seal_init_vault_addr }}/v1/sys/health"
+    ca_path: "{{ sg_seal_init_vault_ca }}"
+  register: sg_seal_init_health
+  until: sg_seal_init_health.status == 200
+  retries: 30
+  delay: 3
+  check_mode: false
+
+- name: Bootstrap seal Vault tokens
+  ansible.builtin.include_tasks: tokens.yml
+  vars:
+    bt_addr: "{{ sg_seal_init_vault_addr }}"
+    bt_root_token: "{{ sg_seal_init_data.root_token }}"
+    bt_tokens: "{{ sg_seal_init_bootstrap_tokens }}"
+    bt_ca: "{{ sg_seal_init_vault_ca }}"
+    bt_tokens_dir: "{{ sg_seal_init_tokens_dir }}"
+    bootstrap_token_period: "{{ sg_seal_init_token_period }}"
+  when: sg_seal_init_data is defined

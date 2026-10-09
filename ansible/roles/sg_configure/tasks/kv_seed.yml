@@ -1,0 +1,50 @@
+---
+# ansible/roles/sg_configure/tasks/kv_seed.yml
+# Seed kv/shift-gear/config/app-config once — realistic config block,
+# generated (no literal values). Written only when absent; never overwritten.
+# A second make lab with an existing seed reports ok.
+
+- name: Check if app-config KV seed exists
+  ansible.builtin.uri:
+    url: "{{ sg_configure_vault_addr }}/v1/{{ sg_configure_kv_mount }}/data/{{ sg_configure_app_config_kv_path }}"
+    ca_path: "{{ sg_configure_vault_ca }}"
+    headers:
+      X-Vault-Token: "{{ sg_vault_token }}"
+      X-Vault-Namespace: "shift-gear"
+    status_code: [200, 404]
+  check_mode: false
+  register: sg_configure_app_cfg_check
+  retries: 3
+  delay: 3
+  until: sg_configure_app_cfg_check.status in [200, 404]
+  no_log: true
+
+- name: Seed app-config (only when absent)
+  ansible.builtin.uri:
+    url: "{{ sg_configure_vault_addr }}/v1/{{ sg_configure_kv_mount }}/data/{{ sg_configure_app_config_kv_path }}"
+    method: POST
+    ca_path: "{{ sg_configure_vault_ca }}"
+    headers:
+      X-Vault-Token: "{{ sg_vault_token }}"
+      X-Vault-Namespace: "shift-gear"
+    body_format: json
+    body:
+      data:
+        app_name: "shift-gear"
+        environment: "lab"
+        log_level: "info"
+        feature_flag_oidc: "true"
+        # Generated token: never stored in source; replaced per-install.
+        session_secret: "{{ lookup('ansible.builtin.password', '/dev/null', length=48,
+                                   chars=['ascii_letters', 'digits']) }}"
+        db_pool_min: "2"
+        db_pool_max: "10"
+        db_connect_timeout_s: "5"
+    status_code: [200, 204]
+  register: sg_configure_app_cfg_seed
+  changed_when: true
+  when: sg_configure_app_cfg_check.status == 404
+  no_log: true
+  # Terraform creates the VaultStaticSecret before this phase seeds its path;
+  # VSO's first read fails and it backs off. Nudge it once the seed is written.
+  notify: Resync VSO app-config

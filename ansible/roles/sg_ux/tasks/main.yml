@@ -1,0 +1,195 @@
+---
+# ansible/roles/sg_ux/tasks/main.yml — the console phase.
+#   1. Build the console image in-cluster (Terraform owns the BuildConfig and
+#      ImageStream), only when ui/ changed: the source digest is kept as an
+#      annotation on the ImageStream, so a re-run builds nothing. No local
+#      container engine, no registry exposed outside the cluster, TLS verified.
+#   2. Collect evidence (scripts/evidence.py reads OpenShift and Vault; never
+#      invents a value) and secret-scan it before it leaves the controller.
+#   3. Sync it into ConfigMap sg-evidence, which the console mounts read-only.
+#      This sync is the one documented re-run change (idempotency-allow.txt).
+
+- name: Compute the console build-context digest (ui/ minus build output and tests)
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      find . -type f ! -path './node_modules/*' ! -path './.nuxt/*' ! -path './.output/*'
+      ! -path './test-results/*' ! -path './playwright-report/*' ! -path './tests/*'
+      ! -name 'playwright.config.ts' ! -name '._*' ! -name '.DS_Store' -print0 |
+      LC_ALL=C sort -z | xargs -0 shasum -a 256 | shasum -a 256 | cut -d' ' -f1
+    chdir: "{{ sg_ux_source }}"
+    executable: /bin/bash
+  register: sg_ux_src
+  changed_when: false
+  check_mode: false
+
+- name: Read the console ImageStream
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ sg_ux_kubeconfig }}"
+    api_version: image.openshift.io/v1
+    kind: ImageStream
+    namespace: "{{ sg_ux_namespace }}"
+    name: shift-gear-ui
+  register: sg_ux_is
+
+- name: Decide whether the console image needs a build
+  ansible.builtin.set_fact:
+    sg_ux_build_needed: >-
+      {{ (sg_ux_is.resources | first).status.tags | default([])
+         | selectattr('tag', 'equalto', 'latest') | list | length == 0
+         or ((sg_ux_is.resources | first).metadata.annotations | default({}))
+            ['shift-gear/source-digest'] | default('') != sg_ux_src.stdout }}
+
+- name: Build the console image in-cluster
+  when: sg_ux_build_needed | bool and not ansible_check_mode
+  block:
+    - name: Strip macOS extended attributes from the build context
+      ansible.builtin.command:
+        argv: [xattr, -rc, "{{ sg_ux_source }}"]
+      changed_when: false
+
+    # Stage a copy without node_modules and build output (ui/.dockerignore's
+    # exclusions) and let oc create the archive: macOS tar writes extended
+    # headers the builder cannot unpack. COPYFILE_DISABLE keeps ._* out (lesson 7).
+    - name: Stage the build context
+      ansible.builtin.command:
+        argv: [rsync, -a, --delete,
+               --exclude=node_modules, --exclude=.nuxt, --exclude=.output,
+               --exclude=test-results, --exclude=playwright-report,
+               --exclude=/tests, --exclude=/playwright.config.ts,
+               --exclude=._*, --exclude=.DS_Store,
+               "{{ sg_ux_source }}/", "{{ sg_ux_stage }}/"]
+      environment:
+        COPYFILE_DISABLE: "1"
+      changed_when: false
+
+    - name: Start the build and wait for it
+      ansible.builtin.command:
+        argv: [oc, -n, "{{ sg_ux_namespace }}", start-build, shift-gear-ui,
+               "--from-dir={{ sg_ux_stage }}", --follow, --wait]
+      environment:
+        KUBECONFIG: "{{ sg_ux_kubeconfig }}"
+        COPYFILE_DISABLE: "1"
+      register: sg_ux_build
+      changed_when: true
+
+    - name: Record the built context digest on the ImageStream
+      kubernetes.core.k8s:
+        kubeconfig: "{{ sg_ux_kubeconfig }}"
+        state: patched
+        api_version: image.openshift.io/v1
+        kind: ImageStream
+        namespace: "{{ sg_ux_namespace }}"
+        name: shift-gear-ui
+        definition:
+          metadata:
+            annotations:
+              shift-gear/source-digest: "{{ sg_ux_src.stdout }}"
+
+    # Replace the pod, not the Deployment's template (Terraform's): the new
+    # pod pulls :latest (imagePullPolicy Always).
+    - name: Replace the console pod so it runs the new image
+      kubernetes.core.k8s:
+        kubeconfig: "{{ sg_ux_kubeconfig }}"
+        state: absent
+        api_version: v1
+        kind: Pod
+        namespace: "{{ sg_ux_namespace }}"
+        label_selectors:
+          - app.kubernetes.io/name=sg-ui
+
+  always:
+    - name: Remove the staged build context
+      ansible.builtin.file:
+        path: "{{ sg_ux_stage }}"
+        state: absent
+
+- name: Collect the evidence snapshot (.build/evidence.json)
+  ansible.builtin.command:
+    argv: ["{{ playbook_dir }}/../scripts/evidence.py"]
+  environment:
+    KUBECONFIG: "{{ sg_ux_kubeconfig }}"
+  register: sg_ux_evidence
+  changed_when: false
+  check_mode: false
+
+- name: Find the evidence files to publish
+  ansible.builtin.stat:
+    path: "{{ sg_ux_build_dir }}/{{ item }}"
+  loop: "{{ sg_ux_evidence_files }}"
+  register: sg_ux_files
+
+- name: List the evidence files that exist
+  ansible.builtin.set_fact:
+    sg_ux_present: "{{ sg_ux_files.results | selectattr('stat.exists') | list }}"
+
+- name: Secret-scan the evidence before it leaves the controller
+  ansible.builtin.command:
+    argv: "{{ [playbook_dir ~ '/../scripts/secret-scan.sh'] + (sg_ux_present | map(attribute='stat.path') | list) }}"
+  changed_when: false
+  check_mode: false
+
+- name: Read the evidence files
+  ansible.builtin.set_fact:
+    sg_ux_evidence_data: "{{ sg_ux_evidence_data | default({}) | combine({item.item: lookup('ansible.builtin.file', item.stat.path)}) }}"
+  loop: "{{ sg_ux_present }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Sync the evidence ConfigMap (the console mounts it read-only)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ sg_ux_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ sg_ux_evidence_configmap }}"
+        namespace: "{{ sg_ux_namespace }}"
+        labels:
+          app.kubernetes.io/part-of: shift-gear
+          app.kubernetes.io/managed-by: ansible
+      data: "{{ sg_ux_evidence_data }}"
+  register: sg_ux_cm
+
+- name: Wait for the console to be ready
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ sg_ux_kubeconfig }}"
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ sg_ux_namespace }}"
+    name: sg-ui
+  register: sg_ux_ui
+  until: (sg_ux_ui.resources | first).status.readyReplicas | default(0) | int >= 1
+  retries: 36
+  delay: 5
+  check_mode: false
+
+# The kubelet refreshes a mounted ConfigMap up to a minute after it changes;
+# the phase is done only when the console serves the snapshot just synced.
+- name: Wait until the console serves the synced evidence
+  when: sg_ux_cm is changed and not ansible_check_mode
+  block:
+    - name: Find the console pod
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ sg_ux_kubeconfig }}"
+        kind: Pod
+        namespace: "{{ sg_ux_namespace }}"
+        label_selectors: [app.kubernetes.io/name=sg-ui]
+        field_selectors: [status.phase=Running]
+      register: sg_ux_pods
+
+    - name: Read the evidence timestamp the console sees
+      kubernetes.core.k8s_exec:
+        kubeconfig: "{{ sg_ux_kubeconfig }}"
+        namespace: "{{ sg_ux_namespace }}"
+        pod: "{{ (sg_ux_pods.resources | first).metadata.name }}"
+        command: cat /evidence/evidence.json
+      register: sg_ux_served
+      until: >-
+        sg_ux_served.rc | default(1) == 0 and
+        (sg_ux_served.stdout | from_json).observedAt ==
+        (sg_ux_evidence_data['evidence.json'] | from_json).observedAt
+      retries: 30
+      delay: 5
+      changed_when: false

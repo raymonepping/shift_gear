@@ -1,0 +1,61 @@
+---
+# ansible/roles/sg_configure/tasks/cert_auth.yml
+# Enable and configure TLS cert auth. Role internal-client trusts the pki-int
+# chain (issued by sg_prepare's PKI). token_ttl=2m.
+# Note: Vault answers HTTP 500 (not 4xx) for an expired client cert at
+# auth/cert/login; the error text contains "x509: certificate has expired".
+# Classify by the error text, not the status code.
+
+- name: Configure cert auth
+  module_defaults:
+    ansible.builtin.uri:
+      ca_path: "{{ sg_configure_vault_ca }}"
+      headers:
+        X-Vault-Token: "{{ sg_vault_token }}"
+        X-Vault-Namespace: "shift-gear"
+  no_log: true
+  block:
+    - name: Read enabled auth methods (for cert auth check)
+      ansible.builtin.uri:
+        url: "{{ sg_configure_vault_addr }}/v1/sys/auth"
+      check_mode: false
+      register: sg_configure_cert_auth_list
+
+    - name: Enable cert auth if absent
+      ansible.builtin.uri:
+        url: "{{ sg_configure_vault_addr }}/v1/sys/auth/cert"
+        method: POST
+        body_format: json
+        body:
+          type: cert
+          description: "Shift Gear TLS client cert auth"
+        status_code: [200, 204]
+      changed_when: true
+      when: "'cert/' not in sg_configure_cert_auth_list.json.data"
+
+    - name: Read the PKI intermediate CA cert from the local CA file
+      ansible.builtin.set_fact:
+        sg_configure_pki_ca_pem: "{{ lookup('file', playbook_dir + '/../.secrets/tls/pub/ca.pem') }}"
+
+    - name: Read internal-client cert auth role
+      ansible.builtin.uri:
+        url: "{{ sg_configure_vault_addr }}/v1/auth/cert/certs/internal-client"
+        status_code: [200, 404]
+      check_mode: false
+      register: sg_configure_cert_role_read
+
+    - name: Write internal-client cert role when absent or CA changed
+      ansible.builtin.uri:
+        url: "{{ sg_configure_vault_addr }}/v1/auth/cert/certs/internal-client"
+        method: POST
+        body_format: json
+        body:
+          certificate: "{{ sg_configure_pki_ca_pem }}"
+          token_policies: ["sg-engineer"]
+          token_ttl: "2m"
+          token_max_ttl: "5m"
+        status_code: [200, 204]
+      changed_when: true
+      when: >-
+        sg_configure_cert_role_read.status == 404 or
+        (sg_configure_cert_role_read.json.data.certificate | trim) != (sg_configure_pki_ca_pem | trim)

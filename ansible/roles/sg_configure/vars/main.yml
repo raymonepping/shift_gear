@@ -1,0 +1,30 @@
+---
+# ansible/roles/sg_configure/vars/main.yml
+# Variables for the sg_configure role. All vars use the sg_configure_ prefix.
+
+sg_configure_vault_addr: "https://vault.{{ infra_cluster.apps_domain }}"
+sg_configure_vault_ca: "{{ playbook_dir }}/../.secrets/tls/pub/ca.pem"
+sg_configure_vault_token_file: "{{ playbook_dir }}/../.secrets/tokens/ansible-platform"
+
+# KV mount + paths
+sg_configure_kv_mount: "kv"   # the namespace comes from the X-Vault-Namespace header (lesson 16)
+sg_configure_postgres_kv_path: "shift-gear/postgres"
+sg_configure_app_config_kv_path: "shift-gear/config/app-config"
+
+# Vault kubernetes auth
+sg_configure_k8s_auth_mount: "kubernetes"
+
+# Vault database mount
+sg_configure_db_mount: "database"
+sg_configure_db_connection: "shiftgear"
+sg_configure_db_role: "demo-reader"
+sg_configure_db_url: "postgresql://{{ '{{username}}' }}:{{ '{{password}}' }}@postgres.sg-workloads.svc:5432/shiftgear?sslmode=disable"
+
+# Kubernetes details
+sg_configure_kubeconfig: "{{ playbook_dir }}/../{{ infra_cluster.kubeconfig_path }}"
+sg_configure_k8s_api_url: "{{ infra_cluster.api_url }}"
+sg_configure_reviewer_secret: "vault-token-reviewer-token"
+sg_configure_reviewer_ns: "sg-vault"
+
+# rotate-root marker (no secret value — just existence is checked)
+sg_configure_db_rotate_marker: "{{ playbook_dir }}/../.build/db-rotate-root.done"

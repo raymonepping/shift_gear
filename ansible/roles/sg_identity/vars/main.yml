@@ -1,0 +1,90 @@
+---
+# ansible/roles/sg_identity/vars/main.yml
+# Variables for the sg_identity role. All vars use the sg_identity_ prefix.
+
+# Vault addresses and credentials
+sg_identity_vault_addr: "https://vault.{{ infra_cluster.apps_domain }}"
+sg_identity_vault_ca: "{{ playbook_dir }}/../.secrets/tls/pub/ca.pem"
+sg_identity_vault_token_file: "{{ playbook_dir }}/../.secrets/tokens/ansible-platform"
+
+# Vault KV path for identity secrets (platform namespace)
+sg_identity_kv_mount: "kv"   # the namespace comes from the X-Vault-Namespace header (lesson 16)
+sg_identity_kv_path: "shift-gear/identity"
+
+# Base DN for the directory
+sg_identity_base_dn: "dc=shiftgear,dc=local"
+sg_identity_domain: "shiftgear.local"
+
+# Keycloak
+sg_identity_keycloak_url: "https://keycloak.{{ infra_cluster.apps_domain }}"
+sg_identity_keycloak_issuer: "https://keycloak.{{ infra_cluster.apps_domain }}/realms/shift-gear"
+sg_identity_realm: "shift-gear"
+
+# OpenLDAP service URL (in-cluster; Ansible runs on localhost and reaches it
+# via the Kubernetes exec/Job pattern, not direct LDAP from the controller)
+sg_identity_ldap_svc: "ldap://openldap.sg-identity.svc:1389"
+
+# Secret keys that must always exist in Vault KV
+sg_identity_secret_keys:
+  - ldap_admin_password
+  - ldap_readonly_password
+  - keycloak_admin_password
+  - vault_client_secret
+  - sg_cli_client_secret
+
+# Users: uid, cn (display name), sn (surname), givenName, groups membership
+sg_identity_users:
+  - uid: ada
+    cn: "Ada Lovelace"
+    sn: Lovelace
+    givenName: Ada
+    groups: [engineers, staff]
+  - uid: ben
+    cn: "Ben Turing"
+    sn: Turing
+    givenName: Ben
+    groups: [staff]
+  - uid: cleo
+    cn: "Cleo Shannon"
+    sn: Shannon
+    givenName: Cleo
+    groups: [operators, staff]
+  - uid: dirk
+    cn: "Dirk Dijkstra"
+    sn: Dijkstra
+    givenName: Dirk
+    groups: [approvers, operators, staff]
+  - uid: finn
+    cn: "Finn Hopper"
+    sn: Hopper
+    givenName: Finn
+    groups: [auditors]
+
+# Groups: name → policy they carry
+sg_identity_groups:
+  engineers: sg-engineer
+  operators: sg-operator
+  approvers: sg-approver
+  auditors: sg-auditor
+  staff: "" # staff is a grouping group; no direct policy
+
+# Vault OIDC redirect URIs for the vault client
+sg_identity_oidc_redirect_uris:
+  - "https://vault.{{ infra_cluster.apps_domain }}/ui/vault/auth/oidc/oidc/callback"
+  - "https://shiftgear.{{ infra_cluster.apps_domain }}/auth/callback"
+  - "http://localhost:8250/oidc/callback"
+
+# Kubeconfig path for k8s_exec tasks
+sg_identity_kubeconfig: "{{ playbook_dir }}/../{{ infra_cluster.kubeconfig_path }}"
+
+# OpenLDAP build context (Alpine, built in-cluster by image.yml)
+sg_identity_openldap_context: "{{ playbook_dir }}/../deploy/identity/openldap"
+
+# A real newline (double-quoted YAML processes the escape). LDIF strings built
+# inside folded (>-) scalars keep "\\n" literally, so they are converted with it.
+sg_identity_nl: "\n"
+
+# The router's CA (contract: cluster.ingress_ca_path). Keycloak sits behind a
+# reencrypt Route, so its clients (Ansible here, Vault for OIDC discovery)
+# verify the router's certificate, not the project CA.
+sg_identity_ingress_ca: "{{ playbook_dir }}/../{{ infra_cluster.ingress_ca_path }}"

@@ -1,0 +1,105 @@
+---
+# ansible/roles/sg_configure/tasks/k8s_auth.yml
+# Enable and configure Vault kubernetes auth in the shift-gear namespace.
+# Role vso-workloads: SA vso-workloads in sg-workloads, policy sg-vso, 10m TTL.
+# The vault-token-reviewer token is read from the Kubernetes Secret created
+# by terraform/foundation and passed in the body — never in a URL.
+
+- name: Read vault-token-reviewer token from Kubernetes
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ sg_configure_kubeconfig }}"
+    api_version: v1
+    kind: Secret
+    name: "{{ sg_configure_reviewer_secret }}"
+    namespace: "{{ sg_configure_reviewer_ns }}"
+  register: sg_configure_reviewer_secret_data
+  no_log: true
+
+- name: Decode the reviewer token
+  ansible.builtin.set_fact:
+    sg_configure_reviewer_token: >-
+      {{ sg_configure_reviewer_secret_data.resources[0].data.token | b64decode | trim }}
+    sg_configure_reviewer_ca: >-
+      {{ sg_configure_reviewer_secret_data.resources[0].data['ca.crt'] | b64decode }}
+  no_log: true
+
+- name: Manage Vault kubernetes auth
+  module_defaults:
+    ansible.builtin.uri:
+      ca_path: "{{ sg_configure_vault_ca }}"
+      headers:
+        X-Vault-Token: "{{ sg_vault_token }}"
+        X-Vault-Namespace: "shift-gear"
+  no_log: true
+  block:
+    - name: Read enabled auth methods
+      ansible.builtin.uri:
+        url: "{{ sg_configure_vault_addr }}/v1/sys/auth"
+      check_mode: false
+      register: sg_configure_auth_list
+
+    - name: Enable kubernetes auth if absent
+      ansible.builtin.uri:
+        url: "{{ sg_configure_vault_addr }}/v1/sys/auth/{{ sg_configure_k8s_auth_mount }}"
+        method: POST
+        body_format: json
+        body:
+          type: kubernetes
+          description: "Shift Gear Kubernetes workloads"
+        status_code: [200, 204]
+      changed_when: true
+      when: (sg_configure_k8s_auth_mount ~ '/') not in sg_configure_auth_list.json.data
+
+    - name: Read current kubernetes auth config
+      ansible.builtin.uri:
+        url: "{{ sg_configure_vault_addr }}/v1/auth/{{ sg_configure_k8s_auth_mount }}/config"
+        status_code: [200, 404]
+      check_mode: false
+      register: sg_configure_k8s_cfg
+
+    - name: Define desired kubernetes auth config
+      ansible.builtin.set_fact:
+        sg_configure_k8s_desired:
+          kubernetes_host: "{{ sg_configure_k8s_api_url }}"
+          kubernetes_ca_cert: "{{ sg_configure_reviewer_ca }}"
+          disable_local_ca_jwt: true
+
+    - name: Write kubernetes auth config when it differs
+      ansible.builtin.uri:
+        url: "{{ sg_configure_vault_addr }}/v1/auth/{{ sg_configure_k8s_auth_mount }}/config"
+        method: POST
+        body_format: json
+        body: >-
+          {{ sg_configure_k8s_desired
+             | combine({'token_reviewer_jwt': sg_configure_reviewer_token}) }}
+        status_code: [200, 204]
+      changed_when: true
+      when: >-
+        sg_configure_k8s_cfg.status == 404 or
+        sg_configure_k8s_cfg.json.data.kubernetes_host != sg_configure_k8s_desired.kubernetes_host
+
+    - name: Read vso-workloads role
+      ansible.builtin.uri:
+        url: "{{ sg_configure_vault_addr }}/v1/auth/{{ sg_configure_k8s_auth_mount }}/role/vso-workloads"
+        status_code: [200, 404]
+      check_mode: false
+      register: sg_configure_vso_role
+
+    - name: Write vso-workloads role when absent or changed
+      ansible.builtin.uri:
+        url: "{{ sg_configure_vault_addr }}/v1/auth/{{ sg_configure_k8s_auth_mount }}/role/vso-workloads"
+        method: POST
+        body_format: json
+        body:
+          bound_service_account_names: ["vso-workloads"]
+          bound_service_account_namespaces: ["sg-workloads"]
+          policies: ["sg-vso"]
+          token_ttl: 600
+          token_max_ttl: 1800
+        status_code: [200, 204]
+      changed_when: true
+      when: >-
+        sg_configure_vso_role.status == 404 or
+        sg_configure_vso_role.json.data.policies != ['sg-vso'] or
+        (sg_configure_vso_role.json.data.bound_service_account_namespaces | sort) != ['sg-workloads'] or
+        (sg_configure_vso_role.json.data.bound_service_account_names | sort) != ['vso-workloads']

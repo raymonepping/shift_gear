@@ -1,0 +1,13 @@
+.nuxt
+.output
+node_modules
+# macOS metadata files (lesson from red_doors build)
+._*
+.DS_Store
+.AppleDouble
+.LSOverride
+# Test results
+test-results
+playwright-report
+tests
+playwright.config.ts

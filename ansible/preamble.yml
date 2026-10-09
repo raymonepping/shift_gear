@@ -1,0 +1,65 @@
+---
+# ansible/preamble.yml — imported as import_playbook by phases that need it.
+# Asserts: infra outputs exist, token file present, Vault reachable.
+# Each phase sets required vars before importing this.
+
+- name: Preamble — pre-flight assertions
+  hosts: localhost
+  gather_facts: false
+  vars:
+    sg_preamble_tf_roots: []
+    sg_preamble_vault: ""
+
+  tasks:
+    - name: Assert infra outputs exist
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/../.build/terraform/infra.json"
+      register: _sg_infra_check
+      failed_when: not _sg_infra_check.stat.exists
+      changed_when: false
+
+    - name: Load infra contract
+      ansible.builtin.set_fact:
+        sg_tf_infra_contract: "{{ lookup('file', playbook_dir + '/../.build/terraform/infra.json') | from_json }}"
+      changed_when: false
+
+    - name: Set derived addresses from contract
+      ansible.builtin.set_fact:
+        sg_apps_domain: "{{ sg_tf_infra_contract.cluster.apps_domain }}"
+        sg_vault_addr: "https://vault.{{ sg_tf_infra_contract.cluster.apps_domain }}"
+        sg_vault_seal_addr: "https://vault-seal.{{ sg_tf_infra_contract.cluster.apps_domain }}"
+        sg_kubeconfig: "{{ sg_tf_infra_contract.cluster.kubeconfig_path }}"
+        sg_ca_cert: "{{ playbook_dir }}/../.secrets/tls/pub/ca.pem"
+        # infra_cluster: canonical alias consumed by all roles
+        infra_cluster: "{{ sg_tf_infra_contract.cluster }}"
+      changed_when: false
+
+    - name: Assert required Terraform output files exist
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/../.build/terraform/{{ item }}.json"
+      register: _sg_tf_check
+      loop: "{{ sg_preamble_tf_roots }}"
+      failed_when: not _sg_tf_check.stat.exists
+      changed_when: false
+      when: sg_preamble_tf_roots | length > 0
+
+    - name: Assert bootstrap token file exists
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/../.secrets/tokens/ansible-{{ sg_preamble_vault }}"
+      register: _sg_token_check
+      failed_when: not _sg_token_check.stat.exists
+      changed_when: false
+      when: sg_preamble_vault != ""
+
+    - name: Read bootstrap token
+      ansible.builtin.slurp:
+        src: "{{ playbook_dir }}/../.secrets/tokens/ansible-{{ sg_preamble_vault }}"
+      register: _sg_token_raw
+      no_log: true
+      when: sg_preamble_vault != ""
+
+    - name: Set VAULT_TOKEN fact (never logged)
+      ansible.builtin.set_fact:
+        sg_vault_token: "{{ _sg_token_raw.content | b64decode | trim }}"
+      no_log: true
+      when: sg_preamble_vault != ""

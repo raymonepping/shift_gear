@@ -1,0 +1,59 @@
+---
+# ansible/roles/sg_prepare/tasks/main.yml
+# Prepare phase: project CA + TLS certificates + Kubernetes Secrets + VSO CSV gate.
+#
+# Responsibilities:
+#   1. Run scripts/tls.sh (idempotent): creates the project CA, issues the
+#      vault-seal, vault, and seal-agent certificates; applies vault-seal-tls,
+#      vault-tls, seal-agent-tls Secrets and vault-license Secrets; applies
+#      sg-ca ConfigMaps in all sg-* namespaces.
+#   2. Wait for the Vault Secrets Operator CSV to reach Succeeded.
+#
+# Everything that writes a secret value uses no_log: true + diff: false.
+# Called by: ansible/prepare.yml → sg_prepare role.
+
+- name: Ensure .secrets/tls directory exists (0700)
+  ansible.builtin.file:
+    path: "{{ playbook_dir }}/../.secrets/tls"
+    state: directory
+    mode: "0700"
+
+- name: Run tls.sh — project CA, certificates, Kubernetes Secrets
+  ansible.builtin.command:
+    argv: ["{{ playbook_dir }}/../scripts/tls.sh"]
+  environment:
+    VAULT_LICENSE: "{{ lookup('env', 'VAULT_LICENSE') }}"
+    KUBECONFIG: "{{ playbook_dir }}/../{{ infra_cluster.kubeconfig_path }}"
+  register: sg_prepare_tls
+  # tls.sh prints a CHANGED line only when it issued a certificate or created/
+  # configured a Secret or ConfigMap, so a re-run reports ok.
+  changed_when: "'CHANGED ' in sg_prepare_tls.stdout"
+  no_log: false        # tls.sh never prints secret values; ok to show output
+
+- name: Read the VSO Subscription's installed CSV
+  kubernetes.core.k8s_info:
+    api_version: operators.coreos.com/v1alpha1
+    kind: Subscription
+    name: vault-secrets-operator
+    namespace: openshift-operators
+  register: sg_prepare_vso_sub
+  until: (sg_prepare_vso_sub.resources | first | default({})).status.installedCSV | default('') | length > 0
+  retries: 60
+  delay: 10
+  check_mode: false
+
+- name: Wait for Vault Secrets Operator CSV to reach Succeeded (lesson 18)
+  kubernetes.core.k8s_info:
+    api_version: operators.coreos.com/v1alpha1
+    kind: ClusterServiceVersion
+    name: "{{ (sg_prepare_vso_sub.resources | first).status.installedCSV }}"
+    namespace: openshift-operators
+  register: sg_prepare_vso_csv
+  until: (sg_prepare_vso_csv.resources | first | default({})).status.phase | default('') == 'Succeeded'
+  retries: 60
+  delay: 10
+  check_mode: false
+
+- name: Report VSO CSV status
+  ansible.builtin.debug:
+    msg: "VSO CSV {{ (sg_prepare_vso_csv.resources | first).metadata.name }} phase={{ (sg_prepare_vso_csv.resources | first).status.phase }}"

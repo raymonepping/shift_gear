@@ -1,0 +1,21 @@
+---
+# ansible/seal-init.yml — Phase: ansible seal-init
+# Init the seal Vault (1/1 Shamir), unseal, write bootstrap policies + tokens.
+
+- name: Seal-init — init, unseal seal Vault, bootstrap policies + tokens
+  hosts: localhost
+  gather_facts: false
+
+  pre_tasks:
+    - name: Load infra contract
+      ansible.builtin.set_fact:
+        sg_tf_infra_contract: "{{ lookup('file', playbook_dir + '/../.build/terraform/infra.json') | from_json }}"
+      changed_when: false
+
+    - name: Set infra_cluster alias
+      ansible.builtin.set_fact:
+        infra_cluster: "{{ sg_tf_infra_contract.cluster }}"
+      changed_when: false
+
+  roles:
+    - role: sg_seal_init

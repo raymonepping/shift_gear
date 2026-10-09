@@ -1,0 +1,190 @@
+---
+# ansible/roles/sg_identity/tasks/directory.yml
+# Populate OpenLDAP via kubernetes.core.k8s_exec against the running pod.
+# Rationale: community.general.ldap_* modules work fine from a controller
+# that has direct TCP access to LDAP, but from a Mac/Linux laptop targeting
+# an in-cluster service at :1389 (not exposed by any Route or NodePort),
+# the controller cannot reach the pod. k8s_exec runs ldapadd/ldapmodify/
+# ldapsearch inside the openldap pod itself, keeping traffic fully in-cluster.
+#
+# k8s_exec has no stdin: each LDIF is passed base64-encoded inside the
+# command and decoded in the pod, so no quoting can break it.
+# Idempotency: ldapadd exit 68 ("Already exists") is ok, not a change;
+# passwords are checked with ldapwhoami before ldappasswd; group membership
+# is read with ldapsearch and replaced only when it differs.
+
+- name: Wait for the OpenLDAP pod to be Running
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ sg_identity_kubeconfig }}"
+    api_version: v1
+    kind: Pod
+    namespace: sg-identity
+    label_selectors:
+      - "app.kubernetes.io/name=openldap"
+    field_selectors:
+      - status.phase=Running
+  register: sg_identity_ldap_pods
+  until: sg_identity_ldap_pods.resources | length > 0
+  retries: 30
+  delay: 10
+
+- name: Record the OpenLDAP pod name
+  ansible.builtin.set_fact:
+    sg_identity_ldap_pod: "{{ sg_identity_ldap_pods.resources[0].metadata.name }}"
+
+# ── Organisational Units and people ──────────────────────────────────────────
+
+- name: Build the directory entries (the base entry, OUs, then people)
+  ansible.builtin.set_fact:
+    sg_identity_entries: >-
+      {{ sg_identity_entries | default([
+           {'name': 'base',
+            'ldif': 'dn: ' ~ sg_identity_base_dn ~ '\nobjectClass: dcObject\nobjectClass: organization\ndc: '
+                    ~ (sg_identity_base_dn | regex_replace('^dc=([^,]+),.*$', '\1')) ~ '\no: Shift Gear\n'},
+           {'name': 'ou=people', 'ldif': 'dn: ou=people,' ~ sg_identity_base_dn ~ '\nobjectClass: organizationalUnit\nou: people\n'},
+           {'name': 'ou=groups', 'ldif': 'dn: ou=groups,' ~ sg_identity_base_dn ~ '\nobjectClass: organizationalUnit\nou: groups\n'}])
+         + [{'name': 'uid=' ~ item.uid,
+             'ldif': 'dn: uid=' ~ item.uid ~ ',ou=people,' ~ sg_identity_base_dn
+                     ~ '\nobjectClass: inetOrgPerson\nobjectClass: organizationalPerson\nobjectClass: person'
+                     ~ '\nuid: ' ~ item.uid ~ '\ncn: ' ~ item.cn ~ '\nsn: ' ~ item.sn
+                     ~ '\ngivenName: ' ~ item.givenName ~ '\nmail: ' ~ item.uid ~ '@' ~ sg_identity_domain ~ '\n'}] }}
+  loop: "{{ sg_identity_users }}"
+  loop_control:
+    label: "{{ item.uid }}"
+
+- name: Ensure the OUs and person entries (exit 68 = already present)
+  kubernetes.core.k8s_exec:
+    kubeconfig: "{{ sg_identity_kubeconfig }}"
+    namespace: sg-identity
+    pod: "{{ sg_identity_ldap_pod }}"
+    command: >-
+      sh -c 'echo {{ item.ldif | replace('\n', sg_identity_nl) | b64encode }} | base64 -d |
+      ldapadd -x -H ldap://127.0.0.1:1389 -D "cn=admin,{{ sg_identity_base_dn }}"
+      -w "{{ sg_identity_secrets_values.ldap_admin_password }}"'
+  loop: "{{ sg_identity_entries }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: sg_identity_entry_result
+  failed_when: false
+  changed_when: sg_identity_entry_result.rc | default(-1) == 0
+  no_log: true
+
+# The command carries the admin password, so the task above is no_log; LDAP's
+# own error output never contains it, so a failure is reported here with
+# the entry, the exit code and slapd's message.
+- name: Require every entry added or already present
+  ansible.builtin.assert:
+    that: item.rc | default(-1) in [0, 68]
+    fail_msg: >-
+      {{ item.item.name }}: rc={{ item.rc | default('none') }}
+      {{ item.stderr | default(item.msg | default('')) | regex_replace('-w \\S+', '-w ***') }}
+    quiet: true
+  loop: "{{ sg_identity_entry_result.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Set each person's password (only when the stored one does not bind)
+  kubernetes.core.k8s_exec:
+    kubeconfig: "{{ sg_identity_kubeconfig }}"
+    namespace: sg-identity
+    pod: "{{ sg_identity_ldap_pod }}"
+    command: >-
+      sh -c 'if ldapwhoami -x -H ldap://127.0.0.1:1389
+      -D "uid={{ item.uid }},ou=people,{{ sg_identity_base_dn }}"
+      -w "{{ sg_identity_secrets_values['user_' ~ item.uid] }}" >/dev/null 2>&1;
+      then echo unchanged; else ldappasswd -x -H ldap://127.0.0.1:1389
+      -D "cn=admin,{{ sg_identity_base_dn }}"
+      -w "{{ sg_identity_secrets_values.ldap_admin_password }}"
+      -s "{{ sg_identity_secrets_values['user_' ~ item.uid] }}"
+      "uid={{ item.uid }},ou=people,{{ sg_identity_base_dn }}" && echo set; fi'
+  loop: "{{ sg_identity_users }}"
+  loop_control:
+    label: "{{ item.uid }}"
+  register: sg_identity_pwd_result
+  failed_when: sg_identity_pwd_result.rc != 0
+  changed_when: "'set' in sg_identity_pwd_result.stdout"
+  no_log: true
+
+# ── Groups ────────────────────────────────────────────────────────────────────
+
+- name: Build per-group member lists
+  ansible.builtin.set_fact:
+    sg_identity_group_members: >-
+      {{ sg_identity_group_members | default({})
+         | combine({item: sg_identity_users
+             | selectattr('groups', 'contains', item)
+             | map(attribute='uid')
+             | map('regex_replace', '^(.*)$', 'uid=\1,ou=people,' ~ sg_identity_base_dn)
+             | sort | list}) }}
+  loop: "{{ sg_identity_groups.keys() | list }}"
+
+- name: Build each group's LDIF (add and membership replace)
+  ansible.builtin.set_fact:
+    sg_identity_group_ldif: >-
+      {{ sg_identity_group_ldif | default({}) | combine({item: {
+           'add': 'dn: cn=' ~ item ~ ',ou=groups,' ~ sg_identity_base_dn ~ '\nobjectClass: groupOfNames\ncn: ' ~ item ~ '\n'
+                  ~ (sg_identity_group_members[item] | map('regex_replace', '^', 'member: ') | join('\n')) ~ '\n',
+           'replace': 'dn: cn=' ~ item ~ ',ou=groups,' ~ sg_identity_base_dn ~ '\nchangetype: modify\nreplace: member\n'
+                  ~ (sg_identity_group_members[item] | map('regex_replace', '^', 'member: ') | join('\n')) ~ '\n'}}) }}
+  loop: "{{ sg_identity_groups.keys() | list }}"
+
+- name: Ensure the group entries (exit 68 = already present)
+  kubernetes.core.k8s_exec:
+    kubeconfig: "{{ sg_identity_kubeconfig }}"
+    namespace: sg-identity
+    pod: "{{ sg_identity_ldap_pod }}"
+    command: >-
+      sh -c 'echo {{ sg_identity_group_ldif[item].add | replace('\n', sg_identity_nl) | b64encode }} | base64 -d |
+      ldapadd -x -H ldap://127.0.0.1:1389 -D "cn=admin,{{ sg_identity_base_dn }}"
+      -w "{{ sg_identity_secrets_values.ldap_admin_password }}"'
+  loop: "{{ sg_identity_groups.keys() | list }}"
+  register: sg_identity_group_add
+  failed_when: false
+  changed_when: sg_identity_group_add.rc | default(-1) == 0
+  no_log: true
+
+- name: Require every group added or already present
+  ansible.builtin.assert:
+    that: item.rc | default(-1) in [0, 68]
+    fail_msg: "{{ item.item }}: rc={{ item.rc | default('none') }} {{ item.stderr | default(item.msg | default('')) }}"
+    quiet: true
+  loop: "{{ sg_identity_group_add.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Read each group's current members
+  kubernetes.core.k8s_exec:
+    kubeconfig: "{{ sg_identity_kubeconfig }}"
+    namespace: sg-identity
+    pod: "{{ sg_identity_ldap_pod }}"
+    command: >-
+      ldapsearch -x -o ldif-wrap=no -H ldap://127.0.0.1:1389
+      -D "cn=admin,{{ sg_identity_base_dn }}"
+      -w "{{ sg_identity_secrets_values.ldap_admin_password }}"
+      -b "cn={{ item }},ou=groups,{{ sg_identity_base_dn }}" -s base member
+  loop: "{{ sg_identity_groups.keys() | list }}"
+  register: sg_identity_group_read
+  changed_when: false
+  failed_when: sg_identity_group_read.rc != 0
+  check_mode: false
+  no_log: true
+
+- name: Replace membership only where it differs from the declared state
+  kubernetes.core.k8s_exec:
+    kubeconfig: "{{ sg_identity_kubeconfig }}"
+    namespace: sg-identity
+    pod: "{{ sg_identity_ldap_pod }}"
+    command: >-
+      sh -c 'echo {{ sg_identity_group_ldif[item.item].replace | replace('\n', sg_identity_nl) | b64encode }} | base64 -d |
+      ldapmodify -x -H ldap://127.0.0.1:1389 -D "cn=admin,{{ sg_identity_base_dn }}"
+      -w "{{ sg_identity_secrets_values.ldap_admin_password }}"'
+  loop: "{{ sg_identity_group_read.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: >-
+    (item.stdout_lines | select('match', '^member: ') | map('regex_replace', '^member: ', '') | sort | list)
+    != sg_identity_group_members[item.item]
+  register: sg_identity_group_mod
+  failed_when: sg_identity_group_mod.rc != 0
+  changed_when: true
+  no_log: true
