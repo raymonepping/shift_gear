@@ -1,6 +1,10 @@
 // tests/signout.spec.ts — sign-out journey.
 // Signs in fresh (does NOT reuse stored state) so the stored sessions
 // that other specs depend on are never destroyed.
+//
+// Sign-out now redirects through Keycloak's end-session endpoint before
+// returning to /signin. The URL assertion waits long enough for the
+// extra Keycloak redirect to complete.
 import { chromium, expect, test } from '@playwright/test'
 import { BASE, signIn } from './auth'
 import { passwordOf } from './users'
@@ -17,11 +21,12 @@ test('sign out lands on /signin and invalidates the session', async () => {
     // Confirm we are signed in
     await expect(page).toHaveURL(new RegExp(`^${BASE}/?$`))
 
-    // Click Sign out — the form submits POST /auth/logout
+    // Click Sign out — the form submits POST /auth/logout → Keycloak
+    // end-session → redirect back to /signin.
     await page.click('button.persona-out')
 
-    // Handler redirects to /signin
-    await expect(page).toHaveURL(`${BASE}/signin`, { timeout: 10_000 })
+    // Wait through the Keycloak redirect chain back to /signin.
+    await expect(page).toHaveURL(`${BASE}/signin`, { timeout: 20_000 })
     await expect(page).not.toHaveTitle(/Page not found/i)
     const bodyText = await page.textContent('body')
     expect(bodyText).not.toMatch(/page not found/i)

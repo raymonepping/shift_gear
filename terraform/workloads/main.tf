@@ -1533,6 +1533,10 @@ resource "kubernetes_deployment" "ui" {
             value = "https://shiftgear.${local.apps_domain}/auth/callback"
           }
           env {
+            name  = "NUXT_KEYCLOAK_LOGOUT_URL"
+            value = "https://keycloak.${local.apps_domain}/realms/shift-gear/protocol/openid-connect/logout"
+          }
+          env {
             name  = "NUXT_EVIDENCE_DIR"
             value = "/evidence"
           }

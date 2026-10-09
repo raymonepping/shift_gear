@@ -93,7 +93,7 @@ const chain = computed(() => sealChainLabel.value)
               <span class="cluster-dot" :class="{ live: chain.tone === 'healthy' }" aria-hidden="true" />
               <span class="cluster-label">{{ chain.label }}</span>
             </span>
-            <span v-if="session" class="persona">
+            <div v-if="session" class="persona">
               <span class="persona-dot" aria-hidden="true" />
               <span class="persona-name">{{ session.displayName }}</span>
               <span class="persona-role">{{
@@ -106,7 +106,7 @@ const chain = computed(() => sealChainLabel.value)
               <form method="post" action="/auth/logout" class="persona-out-form">
                 <button type="submit" class="persona-out">Sign out</button>
               </form>
-            </span>
+            </div>
           </div>
         </header>
       </div>

@@ -37,6 +37,7 @@ export default defineNuxtConfig({
     vaultNamespace: 'shift-gear',                           // NUXT_VAULT_NAMESPACE
     vaultCaFile: '/ca/ca.crt',                              // NUXT_VAULT_CA_FILE
     oidcRedirectUri: '',                                    // NUXT_OIDC_REDIRECT_URI — set by ansible ux
+    keycloakLogoutUrl: '',                                  // NUXT_KEYCLOAK_LOGOUT_URL — set by terraform workloads
     evidenceDir: '/evidence',                               // NUXT_EVIDENCE_DIR — ConfigMap sg-evidence
     auditApiBase: '',                                       // NUXT_AUDIT_API_BASE — internal API server
     kubeHost: '',                                           // NUXT_KUBE_HOST — e.g. https://api.crc.testing:6443
