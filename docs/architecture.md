@@ -6,8 +6,7 @@ Shift Gear runs on a single OpenShift Local (CRC) instance. Three concerns, thre
   Vault structure (namespaces, mounts, policies, token roles, audit devices).
 - **Ansible** — everything with an order and a moment: init, unseal, credentials, people,
   seeds, proofs. Never creates infrastructure; configures it after Terraform declares it.
-- **Vault Secrets Operator** — runtime secret delivery to workload pods. No Vault token in
-  any pod.
+- **Vault Secrets Operator** — runtime secret delivery to workload pods. No Vault token in the application containers receiving VSO secrets.
 
 ---
 
@@ -19,34 +18,25 @@ Shift Gear runs on a single OpenShift Local (CRC) instance. Three concerns, thre
 | `sg-vault` | tf workloads | Vault Enterprise ×3 (Raft HA), transit-sealed |
 | `sg-identity` | tf workloads | OpenLDAP, Keycloak |
 | `sg-workloads` | tf workloads | workload-a (VSO static), workload-b (VSO dynamic), PostgreSQL |
-| `sg-app` | tf foundation | agent-demo (Vault Agent sidecar), Shift Gear API + UI |
+| `sg-app` | tf workloads | agent-demo (Vault Agent sidecar), sg-ui (Nuxt + Nitro BFF), sg-audit collector |
 | `openshift-operators` | tf foundation | Vault Secrets Operator (CSV) |
 
-All namespaces are created by `terraform/foundation/`. The VSO Subscription is in
-`openshift-operators`; the operator is cluster-scoped.
+The five project namespaces are created by `terraform/foundation/`. The VSO Subscription is in
+the existing `openshift-operators` namespace; the operator is cluster-scoped.
 
 ---
 
 ## Seal chain
 
-The cluster never holds an unseal token. The design:
+The cluster pods carry no seal-Vault token. They call the seal agent over mTLS;
+the agent authenticates to the seal Vault with AppRole and proxies Transit calls.
 
-```
-Seal Vault (sg-vault-seal)
-  ├── Transit mount:  autounseal key
-  ├── AppRole role:   sg-seal-autounseal
-  └── Policy:         autounseal.hcl
-           │
-           ▼ (transit encrypt/decrypt)
-    Vault cluster ×3 (sg-vault)
-      Helm values: seal { type=transit, address=vault-seal-internal.sg-vault-seal.svc }
-           │
-           ▼ (auto-unseals on pod restart)
-      Seal agent (Deployment: sg-vault-seal/seal-agent)
-        auth: AppRole (role-id + secret-id from Secrets)
-        listener: mTLS on port 8200 (client + server TLS)
-        does NOT hold a Vault unseal token
-        rotator CronJob: rotates AppRole secret-id every 24 h
+```text
+Vault cluster (sg-vault), three Raft nodes
+  -> mTLS -> seal-agent.sg-vault-seal.svc:8200
+  -> AppRole-authenticated proxy -> seal Vault Transit key autounseal
+
+seal-rotator CronJob: every six hours, replaces the agent secret-id
 ```
 
 **No seal token on the cluster.** The cluster Vault pods unseal themselves via the transit
@@ -71,7 +61,7 @@ Kubernetes `Service` in `ClusterIP` mode — the load balancer routes to the act
 (Vault redirects standbys).
 
 The enterprise namespace is `shift-gear`. All mounts, policies, auth methods, and secrets live
-there. Every Ansible task and every Terraform provider block sets `X-Vault-Namespace: shift-gear`.
+there, apart from root-level bootstrap and audit operations. Calls to the seal Vault and root-level cluster endpoints use the root namespace; platform calls explicitly select `shift-gear`.
 
 ---
 
@@ -81,7 +71,9 @@ there. Every Ansible task and every Terraform provider block sets `X-Vault-Names
 |---|---|---|---|
 | Kubernetes namespaces | tf foundation | — | — |
 | Routes, Services | tf foundation/workloads | — | — |
-| Helm releases (Vault, VSO) | tf workloads | — | — |
+| Vault Helm releases | tf workloads | — | — |
+| VSO Subscription | tf foundation | Operator Lifecycle Manager | — |
+| Audit collector + socket/file devices | tf workloads/platform | — | — |
 | OpenLDAP, Keycloak Deployments | tf workloads | ansible identity | — |
 | Vault init + unseal keys | — | ansible seal-init, bootstrap | — |
 | Bootstrap tokens | — | ansible seal-init, bootstrap | — |
@@ -132,7 +124,7 @@ VaultDynamicSecret (sg-workloads)
   └── mount: database
       path: creds/demo-reader
       destination Secret: db-creds
-      renewalPercent: 80
+      renewalPercent: 67
 
 Secret: app-config (sg-workloads)
   └── mounted read-only into workload-a pod
@@ -141,7 +133,7 @@ Secret: db-creds (sg-workloads)
   └── mounted read-only into workload-b pod
 ```
 
-No Vault token in any pod. The VSO operator authenticates with Kubernetes auth using the
+No Vault token in the VSO application containers. The VSO operator authenticates with Kubernetes auth using the
 projected service account token of the `vso-workloads` SA.
 
 ---
@@ -152,39 +144,54 @@ projected service account token of the `vso-workloads` SA.
 
 1. **`vault-agent-init`** (init container) — writes `demo-secret` to `/vault/secrets/` before the
    app starts.
-2. **`vault-agent`** (sidecar) — keeps the file current; rotates when the lease expires.
+2. **`vault-agent`** (sidecar) — renews its token and refreshes the KV template.
 
-Auth method: Kubernetes (`sg-agent-demo` role, `sg-app` namespace, `agent-demo-sa` SA).
-Policy: `sg-agent-demo` (read `kv/data/shift-gear/demo/agent-demo`).
+Auth method: Kubernetes (`sg-agent-demo` role, `sg-app` namespace, `sg-agent-demo` SA).
+Policy: `sg-agent-demo` (read `kv/data/shift-gear/agent/demo-secret`).
 
 The application container reads `/vault/secrets/demo-secret` directly — no Vault API call,
-no token, no environment variable.
+no Vault token, no environment variable. The Agent token sink uses a separate
+memory volume mounted only by the init container and sidecar; rendered secrets
+use their own memory volume. `make verify` checks the application cannot see
+either the old shared sink path or the isolated sink path.
 
 ---
 
 ## Audit
 
-Two audit devices are enabled on the cluster Vault (namespace `shift-gear`):
+Terraform `platform` enables both audit devices at the root namespace:
 
-| Device | Path | Type | Notes |
-|---|---|---|---|
-| `file/` | `/vault/audit/audit.log` | file | Written to a PVC mounted in each Vault pod |
-| `socket/` | `127.0.0.1:9090` | socket (TCP) | Ansible configure phase enables this |
+| Device | Destination | Notes |
+| --- | --- | --- |
+| `file/` | stdout | OpenShift log collection; remains available during collector restarts |
+| `socket/` | `sg-audit.sg-app.svc:9090` | TCP JSON lines to the Terraform-owned collector |
+
+`sg-audit` runs in `sg-app` on a pinned UBI Node.js image with a ConfigMap-mounted
+program, so it needs no image build. A source checksum rolls the Deployment.
+It projects entries into a 1,000-entry in-memory buffer; it exposes `GET /audit`
+and `GET /healthz` on HTTP 8080. `sg-audit-ingress` allows 9090 only from Vault
+pods and 8080 only from `sg-ui`. The BFF requires a signed-in session for reads.
+The file device keeps requests working while the socket endpoint restarts.
 
 ---
 
 ## NetworkPolicies
 
-Each namespace has a `default-deny` ingress policy. Named allow policies open only the required
-paths:
+Policies select particular pods and restrict their ingress; the repository does
+not declare a namespace-wide default-deny or restrict egress.
 
-- `sg-vault-seal`: allow from `sg-vault` pods (transit seal) and from the seal agent.
-- `sg-vault`: allow from Routes (ingress controller), from `sg-workloads` (VSO), from
-  `sg-app` (agent-demo), from `sg-vault-seal` (seal agent health probes).
-- `sg-workloads`: allow from Routes (workload Deployments serve no inbound traffic; deny-all is
-  fine).
-- `sg-identity`: allow from `sg-vault` (LDAP auth).
-- `sg-app`: allow from Routes.
+| Target | Allowed inbound traffic |
+| --- | --- |
+| Seal agent | Vault pods in sg-vault, 8200 |
+| Seal Vault | Seal agent, rotator and OpenShift router, 8200 |
+| Vault cluster | Vault peers on 8200/8201; router and sg-workloads, sg-app, openshift-operators on 8200 |
+| Keycloak proxy | Router and Vault pods, 8444; forwards locally to Keycloak 8443 with certificate verification |
+| OpenLDAP | Keycloak and Vault pods, 1389 |
+| PostgreSQL | workload-a/b and Vault pods, 5432 |
+| Audit collector | Vault pods on 9090; sg-ui on 8080 |
+
+Workload-a/b and sg-ui have no selecting ingress policy. These are lab
+boundaries; they do not establish namespace-wide network isolation.
 
 ---
 
@@ -215,14 +222,11 @@ graph TD
         end
         subgraph sg-app
             DEMO["agent-demo\n(sidecar)"]
-            API["sg-api"]
+            AUD["sg-audit\n9090 ingest / 8080 read"]
             UI["sg-ui"]
         end
     end
 
-    SV -->|"transit seal"| V0
-    SV -->|"transit seal"| V1
-    SV -->|"transit seal"| V2
     SA -->|"AppRole"| SV
     ROT -->|"rotates secret-id"| SV
 
@@ -235,9 +239,20 @@ graph TD
     V0 -->|"dynamic creds"| PG
 
     DEMO -->|"k8s auth"| V0
+    V0 -->|"socket audit"| AUD
+    UI -->|"read audit"| AUD
+    V0 -->|"mTLS transit proxy"| SA
+    V1 -->|"mTLS transit proxy"| SA
+    V2 -->|"mTLS transit proxy"| SA
 
     TF["Terraform\n5 roots"] -->|"infra/foundation/workloads\nseal/platform"| CRC
     ANS["Ansible\n8 playbooks"] -->|"Vault API + k8s_exec"| CRC
 ```
 
 See also: [`docs/frontend/DESIGN.md`](frontend/DESIGN.md) for the console UI design.
+
+## Selected Should extensions
+
+The console keeps its published snapshot sources and adds an independent bounded observation adapter for Seal Vault and all three main members, identity discovery and five named Kubernetes status resources (the existing four VSO/consumer resources plus the seal Agent deployment). The seal-chain indicator and diagrams use shared foreground sampling every 15 seconds and expire observations after 30 seconds, independently of snapshot publication. A dedicated projected service-account identity has GET-only named access, without Secret reads or mutation. See [runtime observation](runtime-observation.md).
+
+The six-field `cluster` connection output remains unchanged. Infra now also publishes `images.cli` as dependency metadata, resolved from the cluster's CLI ImageStreamTag; workloads consume its immutable reference. This additional output is a required dependency for the updated workloads root, separate from connection discovery. See [dependency operations](dependency-operations.md) for version/image ownership and upgrade custody.

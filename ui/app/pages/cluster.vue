@@ -4,31 +4,11 @@ import type { ClusterResponse } from '../../shared/types'
 useHead({ title: 'Cluster · Shift Gear' })
 definePageMeta({ middleware: ['auth'] })
 
-const { data, status, refresh } = await useFetch<ClusterResponse>('/api/v1/cluster', { server: false, lazy: true })
+const { data, status, refresh, error } = await useFetch<ClusterResponse>('/api/v1/cluster', { server: false, lazy: true })
 const checking = computed(() => status.value === 'pending')
 let timer: ReturnType<typeof setInterval> | undefined
 onMounted(() => { timer = setInterval(() => refresh(), 5_000) })
 onBeforeUnmount(() => clearInterval(timer))
-
-const sealStatus = computed(() => {
-  if (!data.value) return 'unknown'
-  const sv = data.value.sealVault
-  if (!sv.reachable) return 'unreachable'
-  if (sv.sealed) return 'sealed'
-  return 'unsealed'
-})
-
-function pillClass(node: { reachable: boolean; sealed: boolean; role: string }) {
-  if (!node.reachable) return 'vg-pill--rejected'
-  if (node.sealed) return 'vg-pill--rejected'
-  return node.role === 'leader' ? 'vg-pill--approved' : 'vg-pill--healthy'
-}
-
-function pillLabel(node: { reachable: boolean; sealed: boolean; role: string }) {
-  if (!node.reachable) return 'unreachable'
-  if (node.sealed) return 'sealed'
-  return node.role === 'leader' ? 'leader' : 'standby'
-}
 
 function ttlLabel(seconds: number | null) {
   if (seconds == null) return '—'
@@ -50,60 +30,13 @@ function ttlLabel(seconds: number | null) {
       </p>
     </section>
 
-    <section v-if="data" class="vg-glass sg-panel" aria-label="Seal chain">
-      <div class="vg-section-header">
-        <h2 class="vg-section-title">Seal chain</h2>
-        <span class="sg-obs">observed {{ new Date(data.observedAt).toLocaleTimeString() }}</span>
-      </div>
-      <div class="sg-chain" role="group" aria-label="Seal chain">
-        <!-- Seal Vault node -->
-        <div class="sg-chain-node" :data-status="sealStatus" role="group" aria-label="Seal Vault">
-          <svg class="sg-chain-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
-            <rect x="3" y="9" width="14" height="9" rx="2"/><path d="M7 9V6a3 3 0 0 1 6 0v3"/>
-          </svg>
-          <strong>Seal Vault</strong>
-          <span class="sg-chain-detail">{{ data.sealVault.version ?? 'Vault Enterprise' }}</span>
-          <span class="vg-pill" :class="sealStatus === 'unsealed' ? 'vg-pill--healthy' : 'vg-pill--rejected'">
-            {{ sealStatus }}
-          </span>
-        </div>
-        <span class="sg-chain-arrow" aria-hidden="true">→</span>
+    <SourceState :status="status" :has-data="!!data" :code="error?.statusCode" label="Cluster observations" @retry="refresh()" />
 
-        <!-- Seal Agent node -->
-        <div class="sg-chain-node" :data-available="data.sealAgent.available" role="group" aria-label="Seal Agent">
-          <svg class="sg-chain-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
-            <circle cx="10" cy="10" r="7"/><path d="M10 7v3l2 2"/>
-          </svg>
-          <strong>Seal Agent</strong>
-          <span class="sg-chain-detail">AppRole · mTLS · TTL {{ ttlLabel(data.sealAgent.tokenTtl) }}</span>
-          <span class="vg-pill" :class="data.sealAgent.available ? 'vg-pill--healthy' : 'vg-pill--rejected'">
-            {{ data.sealAgent.available ? 'available' : 'unavailable' }}
-          </span>
-        </div>
-        <span class="sg-chain-arrow" aria-hidden="true">→</span>
-
-        <!-- Cluster nodes -->
-        <div class="sg-chain-nodes" role="list" aria-label="Vault cluster nodes">
-          <div
-            v-for="n in data.vaultCluster.nodes"
-            :key="n.name"
-            class="sg-chain-node sg-chain-node--sm"
-            :data-role="n.role"
-            role="listitem"
-            :aria-label="n.name"
-          >
-            <strong>{{ n.name }}</strong>
-            <span class="vg-pill" :class="pillClass({ ...n, role: n.role })">{{ pillLabel({ ...n, role: n.role }) }}</span>
-            <span class="sg-chain-detail">{{ n.version ?? '' }}</span>
-            <span class="sg-chain-detail sg-mono">raft {{ n.raftAppliedIndex ?? '—' }}</span>
-          </div>
-        </div>
-      </div>
-    </section>
+    <SealChainStatus />
 
     <div v-if="data" class="vg-grid-3">
       <div class="vg-tile" :class="data.vaultCluster.unsealed === data.vaultCluster.total ? 'vg-tile--good' : 'vg-tile--bad'">
-        <span class="vg-tile__label">Main cluster</span>
+        <span class="vg-tile__label">Main cluster · snapshot</span>
         <span class="vg-tile__value">{{ data.vaultCluster.unsealed }}/{{ data.vaultCluster.total }}</span>
         <span class="vg-tile__sub">unsealed · leader {{ data.vaultCluster.leader ?? 'none' }}</span>
       </div>
@@ -169,5 +102,9 @@ function ttlLabel(seconds: number | null) {
 .sg-btn-refresh:hover { background: var(--vg-well); }
 .sg-btn-refresh:disabled { opacity: .5; cursor: default; }
 .sg-spin { display: inline-block; animation: spin 1s linear infinite; }
+@media (max-width: 640px) {
+  .sg-chain-node, .sg-chain-node--sm { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+  .sg-dl { grid-template-columns: minmax(0, 1fr); }
+}
 @keyframes spin { to { transform: rotate(360deg); } }
 </style>

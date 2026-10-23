@@ -22,6 +22,7 @@
   ansible.builtin.command:
     argv: ["{{ playbook_dir }}/../scripts/tls.sh"]
   environment:
+    SG_TLS_RENEW_LEAVES: "{{ lookup('env', 'SG_TLS_RENEW_LEAVES') | default('0', true) }}"
     VAULT_LICENSE: "{{ lookup('env', 'VAULT_LICENSE') }}"
     KUBECONFIG: "{{ playbook_dir }}/../{{ infra_cluster.kubeconfig_path }}"
   register: sg_prepare_tls

@@ -10,6 +10,9 @@ const INTERNAL_TYPES = new Set(['system', 'identity', 'cubbyhole', 'ns_system', 
 export default defineEventHandler(async (event) => {
   const session = await requireSession(event)
 
+  const ev = await readEvidence()
+  const proof = ev?.componentProof ?? null
+  const proofMatchesInputs = !!proof && proof.inputDigest === ev?.automationRun?.inputDigest
   let mounts: Record<string, Record<string, unknown>>
   let state: 'live' | 'unreachable' | 'denied' | 'unconfigured' = 'live'
   const namespace: string | null = 'shift-gear'
@@ -28,11 +31,11 @@ export default defineEventHandler(async (event) => {
     else state = 'unreachable'
 
     // Fall back to evidence ConfigMap
-    const ev = await readEvidence()
     return {
       state,
       namespace,
       checkedAt: new Date().toISOString(),
+      componentProof: proof, proofMatchesInputs,
       engines: ev?.engines?.mounts ?? [],
       skipped: ev?.engines?.skipped ?? [],
     } satisfies EnginesResponse
@@ -62,5 +65,6 @@ export default defineEventHandler(async (event) => {
     checkedAt: new Date().toISOString(),
     engines,
     skipped,
+    componentProof: proof, proofMatchesInputs,
   } satisfies EnginesResponse
 })

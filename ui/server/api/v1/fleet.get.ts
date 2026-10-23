@@ -13,7 +13,7 @@ export default defineEventHandler(async (event) => {
       label: 'Vault cluster',
       value: `${ev?.vault?.unsealed ?? '?'}/${ev?.vault?.total ?? '?'}`,
       sub: `unsealed · leader ${ev?.vault?.leader ?? 'none'}`,
-      tone: ev?.vault?.unsealed === ev?.vault?.total ? 'good' : 'bad',
+      tone: ev?.vault?.total > 0 && ev.vault.unsealed === ev.vault.total ? 'good' : 'warn',
       source: 'evidence/vault.json',
     },
     {
@@ -34,20 +34,22 @@ export default defineEventHandler(async (event) => {
       label: 'Pods',
       value: ev?.pods?.total ?? '—',
       sub: `${ev?.pods?.reachable ?? 0} reachable`,
-      tone: (ev?.pods?.reachable ?? 0) === (ev?.pods?.total ?? 0) ? 'good' : 'warn',
+      tone: ev?.pods?.total > 0 && ev.pods.reachable === ev.pods.total ? 'good' : 'default',
       source: 'evidence/pods.json',
     },
     {
       label: 'Seal agent',
-      value: ev?.sealAgent?.available ? 'running' : 'down',
-      sub: ev?.sealAgent?.tokenTtl ? `token TTL ${ev.sealAgent.tokenTtl}s` : 'no token',
-      tone: ev?.sealAgent?.available ? 'good' : 'bad',
+      value: ev?.sealAgent ? (ev.sealAgent.available ? 'running' : 'down') : 'unknown',
+      sub: ev?.sealAgent?.tokenTtl ? `token TTL ${ev.sealAgent.tokenTtl}s` : 'token TTL not reported',
+      tone: ev?.sealAgent ? (ev.sealAgent.available ? 'good' : 'bad') : 'default',
       source: 'evidence/agent.json',
     },
   ]
 
   const body: FleetResponse = {
-    observedAt: ev?.observedAt ?? new Date().toISOString(),
+    observedAt: ev?.observedAt ?? null,
+    evidence: ev?.evidence,
+    automationRun: ev?.automationRun ?? null,
     tiles,
     sealChain: {
       sealVault: {

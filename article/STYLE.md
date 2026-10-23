@@ -1,10 +1,10 @@
 # Article voice contract
 
 This applies to everything published under `article/`. It is scoped
-narrower than `.claude/skills/no-ai-slop/SKILL.md` on purpose — that
+narrower than `.agents/skills/no-ai-slop/SKILL.md` on purpose — that
 skill also edits `docs/`, where a personal narrator voice would be
-wrong. Articles are Raymon's own first-person account of building The
-Factory. Docs are not.
+wrong. Articles are Raymon's own first-person account of building Shift
+Gear. Docs are not.
 
 ## First person singular, not "we"
 
@@ -41,6 +41,6 @@ draft (`the-vault-behind-the-permission_1.md`) used authorial "we"
 throughout and needed a pass to fix it after the fact. Catch it before
 that pass is needed, not after.
 
-Run `.claude/skills/no-ai-slop/SKILL.md` as the editorial pass on top
+Run `.agents/skills/no-ai-slop/SKILL.md` as the editorial pass on top
 of this, same as always. This file is about voice person, not about
 AI-slop patterns generally — both apply.

@@ -6,14 +6,18 @@ mock_provider "kubernetes" {}
 mock_provider "helm" {}
 
 variables {
-  vault_seal_chart_version = "0.30.0"
-  vault_chart_version      = "0.30.0"
+  vault_seal_chart_version      = "0.30.0"
+  vault_chart_version           = "0.30.0"
+  metrics_backend               = "none"
+  audit_archive_enabled         = false
+  observability_storage_enabled = false
 }
 
 override_data {
   target = data.terraform_remote_state.infra
   values = {
     outputs = {
+      images = { cli = "quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
       cluster = {
         api_url         = "https://api.example.local:6443"
         apps_domain     = "apps.example.local"
@@ -85,5 +89,50 @@ run "seal_agent_resources_exist" {
   assert {
     condition     = kubernetes_cron_job_v1.seal_rotator.spec[0].schedule == "0 */6 * * *"
     error_message = "seal-rotator CronJob must run every 6 hours"
+  }
+}
+
+run "observability_and_agent_boundaries" {
+  command = plan
+  variables {
+    observability_storage_enabled = true
+    audit_archive_enabled         = true
+    metrics_backend               = "opentelemetry"
+  }
+  assert {
+    condition     = !kubernetes_persistent_volume_claim_v1.audit_archive[0].wait_until_bound && !kubernetes_persistent_volume_claim_v1.metrics[0].wait_until_bound
+    error_message = "WaitForFirstConsumer claims must not block before their consuming deployments exist"
+  }
+  assert {
+    condition     = !kubernetes_deployment_v1.agent_db.spec[0].template[0].spec[0].automount_service_account_token && !kubernetes_deployment_v1.agent_db.wait_for_rollout
+    error_message = "Agent needs its explicit audience-bound JWT and must not block the later configuration phase"
+  }
+  assert {
+    condition     = alltrue([for mount in kubernetes_deployment_v1.agent_db.spec[0].template[0].spec[0].container[1].volume_mount : contains(["config", "credentials", "health"], mount.name)])
+    error_message = "The application must not mount the Agent identity or CA volume"
+  }
+}
+
+run "core_needs_no_telemetry" {
+  command = plan
+  assert {
+    condition     = length(kubernetes_deployment_v1.metrics) == 0 && length(kubernetes_deployment_v1.otel) == 0 && length(kubernetes_persistent_volume_claim_v1.audit_archive) == 0 && length(kubernetes_persistent_volume_claim_v1.metrics) == 0
+    error_message = "Default core lab must need neither telemetry backend nor observability PVCs"
+  }
+  assert {
+    condition     = alltrue([for volume in kubernetes_deployment.audit_collector.spec[0].template[0].spec[0].volume : volume.name != "archive"])
+    error_message = "Disabled archive must not mount storage"
+  }
+}
+
+run "prometheus_is_alternative" {
+  command = plan
+  variables {
+    observability_storage_enabled = true
+    metrics_backend               = "prometheus"
+  }
+  assert {
+    condition     = length(kubernetes_deployment_v1.metrics) == 1 && length(kubernetes_deployment_v1.otel) == 0 && !kubernetes_deployment_v1.metrics[0].wait_for_rollout
+    error_message = "Prometheus must be an optional alternative and must not block core rollout"
   }
 }

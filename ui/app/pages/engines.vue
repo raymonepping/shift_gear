@@ -4,7 +4,7 @@ import type { EnginesResponse } from '../../shared/types'
 useHead({ title: 'Engines · Shift Gear' })
 definePageMeta({ middleware: ['auth'] })
 
-const { data, status, refresh } = await useFetch<EnginesResponse>('/api/v1/engines', { server: false, lazy: true })
+const { data, status, refresh, error } = await useFetch<EnginesResponse>('/api/v1/engines', { server: false, lazy: true })
 const checking = computed(() => status.value === 'pending')
 
 let timer: ReturnType<typeof setInterval> | undefined
@@ -45,7 +45,7 @@ function isEnterprise(type: string): boolean {
         <div>
           <p class="eyebrow">Vault Enterprise · namespace engines</p>
           <h1 id="engines-title">Secrets engines</h1>
-          <p>Every engine Vault reports as mounted, read live with a token that can list these mounts and nothing else. Terraform mounts them; Vault is the evidence.</p>
+          <p>Declared engines and their current visibility through your own Vault permissions. Terraform owns mount structure; the source below distinguishes a live read from a published snapshot.</p>
         </div>
         <button class="secondary-button" type="button" :disabled="checking" @click="refresh()">
           <svg class="button-icon" :class="{ spinning: checking }" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M16.5 10a6.5 6.5 0 1 1-1.9-4.6M16.5 3.5v5h-5" /></svg>
@@ -53,8 +53,19 @@ function isEnterprise(type: string): boolean {
         </button>
       </div>
       <p v-if="data" class="hero-status" :class="{ attention: data.state !== 'live' }" role="status">
-        {{ data.engines.length }} live · checked {{ data.checkedAt ? new Date(data.checkedAt).toLocaleTimeString() : '—' }} · from Vault
+        {{ data.engines.length }} {{ data.state === 'live' ? 'live mounts from Vault' : `declared mounts from published evidence · live read ${data.state}` }} · checked {{ data.checkedAt ? new Date(data.checkedAt).toLocaleTimeString() : '—' }}
       </p>
+    </section>
+
+    <SourceState :status="status" :has-data="!!data" :code="error?.statusCode" label="Engine observations" @retry="refresh()" />
+
+    <section v-if="data" class="panel vg-glass" aria-label="PKI and Transit proof">
+      <h2>PKI and Transit lifecycle proof</h2>
+      <p>Owner: Terraform structure · Ansible proof. Dedicated fixtures leave the application key unchanged.</p>
+      <p v-if="data.componentProof">Last recorded result: {{ data.componentProof.result }} · {{ new Date(data.componentProof.at).toLocaleString() }} · {{ data.componentProof.passedChecks }} checks. {{ data.proofMatchesInputs ? 'Matches published automation inputs.' : 'Historical proof: current inputs are not verified by this receipt.' }}</p>
+      <p v-else>No component proof has been published. Current PKI and Transit lifecycle behavior is not verified here.</p>
+      <p>Issuance, client-chain validation, revocation and a five-second expiry fixture; encrypt/decrypt, fixture key rotation, rewrap and retained old ciphertext. Private keys and plaintext are never shown.</p>
+      <NuxtLink to="/help#components">Component proof runbook</NuxtLink>
     </section>
 
     <div v-if="checking && !data" class="skeleton" aria-label="Loading"><div v-for="i in 5" :key="i" /></div>
@@ -76,7 +87,7 @@ function isEnterprise(type: string): boolean {
         <div class="engine-grid">
           <article v-for="eng in data.engines" :key="eng.path" class="engine-card vg-card">
             <div class="engine-head">
-              <span class="vg-pill vg-pill--healthy engine-live">● Live</span>
+              <span class="vg-pill engine-live" :class="{ 'vg-pill--healthy': data.state === 'live' }">{{ data.state === 'live' ? '● Live' : 'Snapshot' }}</span>
               <span v-if="isEnterprise(eng.type) || eng.enterprise" class="vg-pill enterprise-badge">Enterprise</span>
             </div>
             <p class="engine-name">{{ engineLabel(eng.type, eng.path) }}</p>
@@ -112,15 +123,16 @@ function isEnterprise(type: string): boolean {
 </template>
 
 <style scoped>
-.engine-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
-.engine-card { padding: 16px 18px; display: flex; flex-direction: column; gap: 8px; }
+.engine-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr)); gap: 14px; }
+.engine-card { min-width: 0; overflow-wrap: anywhere; padding: 16px 18px; display: flex; flex-direction: column; gap: 8px; }
 .engine-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .engine-live { font-size: 11px; padding: 2px 8px; }
 .enterprise-badge { background: color-mix(in srgb, var(--vg-hue-amber) 10%, transparent); color: var(--vg-governance); border: 1px solid color-mix(in srgb, var(--vg-hue-amber) 28%, transparent); font-size: 10.5px; padding: 2px 8px; }
 .engine-name { margin: 0; font-size: 15px; font-weight: 720; color: var(--vg-text-primary); }
 .engine-path { margin: 0; font-size: 12px; color: var(--vg-action-bright); }
 .engine-desc { margin: 0; font-size: 12.5px; color: var(--vg-text-muted); }
-.engine-meta { margin: 0; display: flex; gap: 12px; font-size: 12px; color: var(--vg-text-muted); }
-.engine-meta div { display: flex; gap: 4px; }
+.engine-meta { margin: 0; display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--vg-text-muted); }
+.engine-meta div { min-width: 0; display: flex; flex-wrap: wrap; gap: 4px; }
+.engine-meta dd { min-width: 0; margin-inline-start: 0; }
 .engine-meta dt { font-weight: 600; }
 </style>

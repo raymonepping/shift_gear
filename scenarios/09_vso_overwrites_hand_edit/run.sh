@@ -7,6 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/../../scripts/common.sh"
+sg_lock "$@"
 require_kubeconfig
 require_cmd oc jq shasum
 

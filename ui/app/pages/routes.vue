@@ -4,7 +4,7 @@ import type { RoutesResponse } from '../../shared/types'
 useHead({ title: 'Routes · Shift Gear' })
 definePageMeta({ middleware: ['auth'] })
 
-const { data, status, refresh } = await useFetch<RoutesResponse>('/api/v1/routes', { server: false, lazy: true })
+const { data, status, refresh, error } = await useFetch<RoutesResponse>('/api/v1/routes', { server: false, lazy: true })
 const checking = computed(() => status.value === 'pending')
 let timer: ReturnType<typeof setInterval> | undefined
 onMounted(() => { timer = setInterval(() => refresh(), 10_000) })
@@ -38,6 +38,8 @@ function backendClass(backend: { ready: boolean; role: string }): string {
         {{ data.routes.length }} routes · {{ allHealthy ? 'every route has a healthy backend' : 'some backends unavailable' }}
       </p>
     </section>
+
+    <SourceState :status="status" :has-data="!!data" :code="error?.statusCode" label="Route observations" @retry="refresh()" />
 
     <div v-if="checking && !data" class="skeleton" aria-label="Loading"><div /><div /><div /></div>
 

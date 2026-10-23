@@ -49,11 +49,14 @@ def summarize(stats):
     return hosts
 
 
-def write_stats(out_dir, phase, hosts, check_mode, now=None):
+def write_stats(out_dir, phase, hosts, check_mode, now=None, changed_tasks=None):
     """Write the stats file atomically; return its path."""
     now = now or datetime.datetime.now(datetime.timezone.utc)
     document = {
         "phase": phase,
+        "run_id": os.environ.get("SG_RUN_ID"),
+        "cluster_id": os.environ.get("SG_CLUSTER_ID"),
+        "changed_tasks": changed_tasks or [],
         "check_mode": bool(check_mode),
         "finished_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "hosts": hosts,
@@ -76,6 +79,14 @@ class CallbackModule(_CallbackBase):
     CALLBACK_NAME = "sg_stats"
     CALLBACK_NEEDS_ENABLED = True
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.changed_tasks = []
+
+    def v2_runner_on_ok(self, result):
+        if result._result.get('changed'):
+            self.changed_tasks.append(result._task.get_name())
+
     def v2_playbook_on_stats(self, stats):
         phase = os.environ.get("SG_PHASE")
         out_dir = os.environ.get("SG_STATS_DIR")
@@ -85,4 +96,4 @@ class CallbackModule(_CallbackBase):
             _ansible_context.CLIARGS.get("check", False)  # type: ignore[union-attr]
             if _ANSIBLE_AVAILABLE and _ansible_context else False
         )
-        write_stats(out_dir, phase, summarize(stats), check_mode)
+        write_stats(out_dir, phase, summarize(stats), check_mode, changed_tasks=self.changed_tasks)

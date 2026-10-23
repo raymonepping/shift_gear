@@ -40,23 +40,56 @@ test('licence tile is visible', async ({ browser }) => {
 
 test('@failover deleting the leader moves leadership', async ({ browser }) => {
   test.skip(!process.env.ENABLE_FAILOVER_TEST, 'set ENABLE_FAILOVER_TEST=true to run')
-  test.setTimeout(240_000)
+  test.setTimeout(420_000)
+  // The seal diagram reads live member health, independent of host publication.
+  const ocEnv = { ...process.env, KUBECONFIG: resolve(ROOT, '.secrets/kube/config') }
+  const liveLeaderExcept = (excluded: string) => {
+    for (const pod of ['vault-0', 'vault-1', 'vault-2']) {
+      if (pod === excluded) continue
+      try {
+        const status = JSON.parse(execFileSync(
+          OC,
+          ['-n', 'sg-vault', 'exec', pod, '--', 'vault', 'status', '-format=json'],
+          { encoding: 'utf8', timeout: 15_000, env: ocEnv, stdio: ['ignore', 'pipe', 'ignore'] },
+        ))
+        if (status.is_self) return pod
+      } catch {
+        // The pod can be unavailable while Raft elects the replacement leader.
+      }
+    }
+    return ''
+  }
   const { context, page } = await pageAs(browser, 'finn')
   await page.goto('/cluster')
-  await page.waitForTimeout(2_000)
   const leaderNode = page.locator('.sg-chain-node[data-role="leader"] strong')
+  await expect(leaderNode).toHaveCount(1)
   const before = (await leaderNode.innerText()).trim()
+  await expect(async () => {
+    await page.reload()
+    await expect(leaderNode).toHaveText(before, { timeout: 4_000 })
+  }).toPass({ timeout: 150_000, intervals: [5_000] })
   execFileSync(OC, ['-n', 'sg-vault', 'delete', 'pod', before, '--wait=false'], {
-    env: { ...process.env, KUBECONFIG: resolve(ROOT, '.secrets/kube/config') },
+    env: ocEnv,
   })
+  execFileSync(OC, ['-n', 'sg-vault', 'wait', `pod/${before}`, '--for=delete', '--timeout=150s'], {
+    timeout: 160_000,
+    env: ocEnv,
+  })
+  let takeover = ''
+  await expect.poll(() => {
+    takeover = liveLeaderExcept(before)
+    return takeover
+  }, { timeout: 150_000, intervals: [3_000] }).toMatch(/^vault-[0-2]$/)
+  expect(takeover).not.toBe(before)
+  execFileSync(OC, ['-n', 'sg-vault', 'wait', `pod/${before}`, '--for=condition=Ready', '--timeout=150s'], {
+    timeout: 160_000,
+    env: ocEnv,
+  })
+  const after = takeover
   await expect(async () => {
     await page.reload()
-    const now = (await leaderNode.innerText({ timeout: 4_000 })).trim()
-    expect(now).not.toBe(before)
-  }).toPass({ timeout: 120_000, intervals: [5_000] })
-  await expect(async () => {
-    await page.reload()
-    await expect(page.locator('.vg-tile', { hasText: /main cluster/i })).toContainText('3/3', { timeout: 4_000 })
+    await expect(leaderNode).toHaveText(after, { timeout: 4_000 })
+    await expect(page.locator('.live-unsealed')).toContainText('3/3 members currently verified unsealed', { timeout: 4_000 })
   }).toPass({ timeout: 150_000, intervals: [5_000] })
   await context.close()
 })

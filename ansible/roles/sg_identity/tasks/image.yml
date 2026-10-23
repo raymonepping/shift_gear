@@ -66,14 +66,15 @@
             annotations:
               shift-gear/source-digest: "{{ sg_identity_ldap_src.stdout }}"
 
-    # Replace the pod (not the Deployment's template, which is Terraform's)
-    # so it pulls the new image now instead of after its pull back-off.
-    - name: Replace the OpenLDAP pod so it runs the new image
-      kubernetes.core.k8s:
-        kubeconfig: "{{ sg_identity_kubeconfig }}"
-        state: absent
-        api_version: v1
-        kind: Pod
-        namespace: sg-identity
-        label_selectors:
-          - app.kubernetes.io/name=openldap
+- name: Pin the ldap build to its immutable image input
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ playbook_dir }}/../scripts/pin-built-image.py"
+      - ldap
+      - "{{ '--check' if ansible_check_mode else '--reconcile' }}"
+  environment:
+    KUBECONFIG: "{{ sg_identity_kubeconfig }}"
+  register: sg_identity_image_pin
+  changed_when: sg_identity_image_pin.stdout == 'changed'
+  check_mode: false

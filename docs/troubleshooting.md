@@ -9,10 +9,9 @@ Real problems encountered during the Shift Gear build. Symptom → cause → fix
 **Symptom:** `make validate` or `make identity-verify` fails with Vault returning `403` on
 Kubernetes auth. The Vault log shows `token has expired`.
 
-**Cause:** After a Mac sleep, the CRC VM clock jumps forward (the hypervisor clock pauses during
-sleep; the guest clock does not advance). Kubernetes projected SA tokens have a 5-minute
-leeway. If the guest thinks it is `T+0` but Vault's clock (synced via the Route from the
-Mac) thinks it is `T+8m`, the token looks expired.
+**Cause:** Mac sleep can leave the CRC guest clock behind. Expired projected
+service-account tokens then fail Kubernetes authentication. Vault runs in the
+same VM; an OpenShift Route does not synchronize its clock.
 
 **Fix:**
 ```sh
@@ -50,12 +49,11 @@ This works because Make expands `$(PERSON)` and the result is passed to the shel
 **Symptom:** `make up` succeeds but `make verify` shows `✗ Seal agent: not available`.
 
 **Cause:** The seal agent pod is running but cannot authenticate because the `seal-agent-approle`
-Secret has a stale secret-id (from before the CRC VM was stopped and restarted). If the
-secret-id was single-use and was consumed before the stop, the agent cannot re-authenticate.
+Secret has a stale secret-id (from before the CRC VM was stopped and restarted). The agent role permits repeated logins; a consumed single-use ID is not the current configuration.
 
 **Fix:**
 ```sh
-make agent   # generates a new secret-id; restarts the seal-agent pod
+make agent   # replaces an absent or expired secret-id; otherwise reuses the valid one
 make verify
 ```
 
@@ -100,23 +98,18 @@ cd terraform/platform && terraform apply
 **Symptom:** `make rotation-proof` fails. The seal Vault returns `429 Too Many Requests` or
 `400 Bad Request` on all subsequent secret-id logins.
 
-**Cause:** The rotator ran twice in quick succession (e.g., a failed CronJob retried). The
-`num_uses=1` secret-id was consumed on the first run; the second run used a new secret-id that
-was also consumed. The seal agent pod now has a secret-id that was already used.
+**Diagnosis:** The agent ID permits repeated logins and expires after 24 hours.
+Check the role’s lifetime and CIDR bindings, the rotator Job status and agent
+authentication errors. Repeated failed logins can trigger lockout; the proof
+must distinguish this from an absent ID.
 
-**Fix:**
 ```sh
-make agent    # generates a fresh secret-id; deploys it to the Secret; restarts the pod
+make agent    # reconciles AppRole material and restarts the agent when needed
+make rotation-proof
 ```
 
-If the AppRole role itself is blocked (all accessors revoked):
-```sh
-VAULT_TOKEN=$(cat .secrets/tokens/ansible-seal) \
-vault write -f auth/approle/role/sg-seal-autounseal/secret-id \
-  -address=https://vault-seal.apps-crc.testing \
-  -ca-cert=.secrets/tls/pub/ca.pem
-# Note the secret_id, then run make agent
-```
+Do not copy a secret-id into the terminal. The agent phase handles credentials
+under `no_log` and persists them only in the intended Kubernetes Secret.
 
 ---
 
@@ -141,12 +134,14 @@ make workloads                         # re-apply
 **Symptom:** `make ux` fails with `401 Unauthorized` on the BuildConfig. The `oc start-build`
 command outputs `error: unauthorized`.
 
-**Cause:** The builder SA token in `sg-app` expired after a long `make crc-stop`.
+**Diagnosis:** Distinguish an expired controller kubeconfig from a build pod's
+registry authentication failure. Do not delete every build pod or manufacture
+a service-account token without identifying which request returned 401.
 
-**Fix:**
 ```sh
-oc -n sg-app delete pod -l openshift.io/build.name   # delete stale builder pods
-oc -n sg-app serviceaccounts new-token builder        # issue a fresh token (OCP 4.11+)
+make crc-up               # refresh kubeconfig and post-start checks
+oc -n sg-app get builds
+# Inspect the failed build's status and logs, then retry:
 make ux
 ```
 
@@ -157,7 +152,7 @@ make ux
 **Symptom:** `workload-b` pods show `Error` or the `db-creds` Secret has a past `lastSyncTime`.
 `make vso-status` shows `syncError: lease has expired`.
 
-**Cause:** The PostgreSQL dynamic credential lease (TTL 1h) expired while the Mac was asleep.
+**Cause:** The PostgreSQL dynamic credential lease (default TTL 5m, maximum 10m) expired while the Mac was asleep.
 VSO's sync cycle did not run because the CRC VM was stopped.
 
 **Fix:**
@@ -205,3 +200,32 @@ the script name.
 grep -vE 'crc-[a-z-]+\.sh'
 ```
 If a new delegation line is added, ensure it matches this pattern.
+
+## Audit collector unreachable
+
+The Audit page reports unreachable rather than falling back to a snapshot.
+Check `oc -n sg-app get deployment sg-audit`, its readiness and its logs, then
+inspect `sg-audit-ingress`: TCP 9090 admits Vault pods; HTTP 8080 admits sg-ui.
+`make workloads` reconciles the collector; `make platform` reconciles both
+Vault devices. Keep the stdout device enabled. The earlier restart proof found
+that Vault kept serving and reconnected on the next audited request. Collector
+entries and counters start again after a restart.
+
+## Cluster or Operator page does not change after a scenario
+
+These pages read the host-published evidence snapshot. A browser reload reads
+the same mounted file. Run `make ux` and wait for its evidence-timestamp check,
+then reload. The Audit page has a separate live collector request.
+
+## Identity reports changed=1 for sg-cli on every run
+
+An empty `valid_post_logout_redirect_uris` list creates an empty Keycloak
+attribute that Keycloak removes. The client task now omits this parameter for
+sg-cli while retaining the Vault client’s configured logout redirects. Two
+consecutive `make identity` runs must report changed=0.
+
+### Seal chain: not currently verified
+
+The topbar and Fleet/Cluster seal diagrams use independent live observations, not the published snapshot. Open Runtime sources to see each fixed source and its sanitized failure reason. Checks run every 15 seconds in a visible tab; results expire after 30 seconds and failed requests withdraw the previous healthy status. An old published snapshot remains old even when live seal health is green.
+
+For a missing Seal Vault response, inspect project CA trust, service reachability and the Terraform-owned `vault-seal-ingress` rule for labelled UI pods. For denied Agent status, inspect `sg-ui-seal-observer` Role/binding in `sg-vault-seal`, then run `make observer-boundary`. An available Agent Deployment is readiness evidence only. Use `make verify` for full operational checks; do not reset Vault or loosen TLS to repair an observation failure.

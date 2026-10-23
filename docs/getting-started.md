@@ -15,7 +15,7 @@ mkdir -p .secrets/crc
 cp ~/Downloads/pull-secret.txt .secrets/crc/pull-secret.txt
 ```
 
-The CRC bootstrap script reads this path. It is in `.gitignore` and `.secretignore`.
+The CRC bootstrap script reads this path. It is covered by `.gitignore`.
 
 ---
 
@@ -45,8 +45,8 @@ This runs `scripts/crc-up.sh` which:
 3. Runs `crc setup` then `crc start --pull-secret-file .secrets/crc/pull-secret.txt`.
 4. Runs `scripts/crc-post-start.sh` (waits for kubeconfig, copies it to `.secrets/kube/config`).
 
-**Expected duration:** 15–20 minutes on first run (image pull + cluster bootstrap).
-Subsequent `make crc-up` calls take 3–5 minutes.
+Startup time depends on image downloads and the local VM. Fresh-build timings
+remain pending the rebuild proof in `docs/operations.md`.
 
 ---
 
@@ -57,7 +57,7 @@ make lab
 ```
 
 `lab.sh` runs all 13 phases from `scripts/phases.txt`, then three gates
-(`idempotency`, `secret-scan`, `boundary`). Progress is printed as each phase starts.
+(`idempotency`, Terraform `drift`, `secret-scan`). Progress is printed as each phase starts.
 On failure the exact resume command is printed:
 
 ```
@@ -66,29 +66,10 @@ Resume:   make configure
 Rerun:    make lab
 ```
 
-**Expected duration (first run):** 35–45 minutes.
-
-Per-phase indicative timings:
-
-| Phase | Tool | Typical |
-|---|---|---|
-| infra | tf | ~30 s |
-| foundation | tf | ~2 min |
-| prepare | ansible | ~3 min (waits for VSO CSV) |
-| workloads | tf | ~8 min (Helm releases pull images) |
-| seal-init | ansible | ~1 min |
-| seal | tf | ~30 s |
-| agent | ansible | ~30 s |
-| bootstrap | ansible | ~2 min |
-| platform | tf | ~1 min |
-| identity | ansible | ~4 min |
-| configure | ansible | ~2 min |
-| ux | ansible | ~3 min (BuildConfig image build) |
-| validate | ansible | ~1 min |
-| gates | — | ~3 min |
-
-These are indicative — image pulls and CRC VM scheduling vary. Check
-`docs/operations.md` for recorded timings from the reference run.
+The first-run duration has not yet been measured on a fresh VM without
+intervention. See [Operations](operations.md) for the measured converged re-run
+and the pending rebuild table. `make lab` prints phase and gate durations;
+`make lab-times` prints the last saved table without running anything.
 
 ---
 
@@ -124,8 +105,7 @@ make identity-show-user PERSON=ada
 ```
 
 Open `https://shiftgear.apps-crc.testing` for the Shift Gear console. Sign in with username
-`ada` — Keycloak handles the redirect. On return, `ada`'s token carries policies
-`sg-engineer` and `sg-staff`.
+`ada` — Keycloak handles the redirect. On return, `ada`'s identity policies include `sg-engineer` (alongside the token's default policy). The `staff` directory group deliberately carries no policy.
 
 For the Vault UI directly: `https://vault.apps-crc.testing` → **Sign in with OIDC**.
 

@@ -1,32 +1,21 @@
-# Scenario 03 — Rotate twice (rotation proof)
+# Scenario 03 — Rotate twice
 
-**Purpose**: Prove the seal agent AppRole secret-id rotation is correct: the old secret-id is rejected (400), the current one is accepted (200), and exactly one valid accessor exists.
+The proof runs two Jobs from `seal-rotator`. It verifies that the agent holds
+a new secret-id, the previous ID is absent, current-ID lookup returns 200,
+and exactly one ID remains for `sg-seal-autounseal`.
 
-## 3-line presenter script
-
-```bash
+```sh
 make rotation-proof
-# observe: secret-id-1 → 400, secret-id-2 → 200, accessor count = 1
+# Inspect previous-ID absence, current lookup=200, count=1.
+# Or run: bash scenarios/03_rotation_proof/run.sh
 ```
 
-## How to run
+The agent role permits repeated logins (`secret_id_num_uses = 0`) and its ID
+expires after 24 hours. The CronJob rotates every six hours. The separate
+rotator ID also permits repeated logins and has no expiry. Login from the
+controller is refused by the pod-CIDR binding, so lookup/list provide the proof.
 
-```bash
-bash scenarios/03_rotation_proof/run.sh
-# or:
-make rotation-proof
-```
-
-## Expected output
-
-```
-==> rotation-proof: rotate seal-agent secret-id twice
- ok   secret-id-1 rejected → HTTP 400 ✓
- ok   secret-id-2 accepted → HTTP 200 ✓
- ok   exactly 1 valid accessor ✓
- ok rotation-proof: PASS (rotated twice, old=rejected, current=200, count=1)
-```
-
-## Why this works
-
-`seal-autounseal` AppRole has `secret_id_num_uses=1` — each issued secret-id can be consumed exactly once for login.  After the agent uses it to authenticate, any further login attempt with the same secret-id fails with 400.  The rotator mints a fresh one on a 6-hour schedule (CronJob), keeping exactly one valid accessor on the role.
+Expected evidence is `the agent holds a new secret-id`, `the previous
+secret-id is gone`, `the current secret-id exists (lookup 200)`, and
+`exactly one secret-id for sg-seal-autounseal`. The previous-ID lookup must return 204 (empty lookup) or 404; an authorization
+or server error fails the proof.

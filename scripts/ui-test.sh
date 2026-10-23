@@ -5,6 +5,7 @@
 # into this process's environment only (SG_PW_<USER>); never written to disk,
 # never printed. Extra arguments go to playwright (e.g. --project chromium).
 set -euo pipefail
+umask 077
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "${SCRIPT_DIR}/common.sh"

@@ -35,3 +35,12 @@ output "audit_collector" {
     read_url       = "http://${kubernetes_service.audit_collector.metadata[0].name}.sg-app.svc:8080"
   }
 }
+
+output "observability" {
+  description = "Non-secret optional integration selection. None requires no telemetry backend or storage."
+  value       = { metrics_backend = var.metrics_backend, audit_archive_enabled = var.audit_archive_enabled, storage_enabled = var.observability_storage_enabled }
+  precondition {
+    condition     = (!var.audit_archive_enabled && var.metrics_backend != "prometheus") || var.observability_storage_enabled
+    error_message = "Archive or Prometheus requires protected storage; keep storage enabled when disabling runtime to preserve existing data."
+  }
+}

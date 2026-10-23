@@ -5,7 +5,7 @@
 #   - ._* in .dockerignore
 #   - liveness: node -e "fetch('http://localhost:3000/api/health')"
 #   - USER 1001 for OpenShift arbitrary UID policy
-FROM docker.io/library/node:24-slim AS build
+FROM docker.io/library/node:24-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5 AS build
 WORKDIR /src
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
@@ -17,7 +17,7 @@ ENV NUXT_BUILD_DIGEST=${BUILD_DIGEST} NUXT_BUILD_TIMESTAMP=${BUILD_TIMESTAMP}
 # nuxt prepare generates .nuxt/ type stubs required for the TypeScript build.
 RUN npx nuxt prepare && npx nuxt build
 
-FROM docker.io/library/node:24-slim
+FROM docker.io/library/node:24-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5
 WORKDIR /app
 COPY --from=build /src/.output ./.output
 USER 1001

@@ -14,22 +14,19 @@
 #   2. sets the node clock from the Mac when the offset exceeds 5 s (chrony
 #      alone does not recover: with `makestep 1.0 3` it only steps at boot,
 #      and observed it reporting 0 s offset while 6 h behind);
-#   3. makes chrony step whenever needed from now on (`makestep 1.0 -1`,
-#      `maxpoll 6`) and restarts it when the config changed.
+#   3. permits later steps (`makestep 1.0 -1`), removes the invalid standalone
+#      maxpoll directive and verifies that the time service actually runs.
 # Idempotent; exits non-zero when it could not reach the node.
 set -euo pipefail
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "${SCRIPT_DIR}/common.sh"
 
-require_cmd crc
 require_cmd oc
 require_kubeconfig
 
-state=$(crc status -o json 2>/dev/null | jq -r '.crcStatus // "Missing"' 2>/dev/null || echo Missing)
-if [[ "${state}" != "Running" ]]; then
-  warn "crc-post-start: CRC is not running (state=${state}); nothing to do"
-  exit 0
+if ! oc --request-timeout=10s whoami >/dev/null 2>&1; then
+  die "crc-post-start: OpenShift API is unavailable; cannot verify node clock"
 fi
 
 node=$(oc get nodes -o jsonpath='{.items[0].metadata.name}')
@@ -52,10 +49,20 @@ result=$(on_node '
   elif ! grep -q "^makestep " "$conf"; then
     echo "makestep 1.0 -1" >>"$conf"; changed=1
   fi
-  grep -q "^maxpoll 6$" "$conf" || { echo "maxpoll 6" >>"$conf"; changed=1; }
-  if [ "$changed" = 1 ]; then systemctl restart chronyd; echo hardened; else echo unchanged; fi
+  # maxpoll is a server/pool option, never a standalone directive.
+  if grep -q "^maxpoll " "$conf"; then
+    sed -i "/^maxpoll /d" "$conf"; changed=1
+  fi
+  if [ "$changed" = 1 ] || ! systemctl is-active --quiet chronyd; then
+    systemctl restart chronyd || exit 1
+  fi
+  systemctl is-active --quiet chronyd || exit 1
+  chronyc tracking >/dev/null || exit 1
+  echo active
 ') || die "crc-post-start: chrony configuration failed"
-case "${result}" in
-*hardened*) ok "chrony: makestep 1.0 -1, maxpoll 6 (restarted)" ;;
-*) ok "chrony already hardened" ;;
-esac
+[[ "${result}" == *active* ]] || die "crc-post-start: chrony service verification failed"
+ok "chrony: valid configuration and active service"
+node_epoch=$(on_node 'date -u +%s') || die "crc-post-start: cannot verify repaired node clock"
+offset=$(( $(date -u +%s) - node_epoch ))
+(( offset >= -5 && offset <= 5 )) || die "crc-post-start: node still ${offset}s off after repair"
+ok "Node clock verified within 5s of host"

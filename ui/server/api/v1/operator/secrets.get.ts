@@ -9,7 +9,8 @@ export default defineEventHandler(async (event) => {
   const ev = await readEvidence()
 
   return {
-    observedAt: ev?.observedAt ?? new Date().toISOString(),
+    observedAt: ev?.observedAt ?? null,
+    evidence: ev?.evidence,
     staticSecrets: ev?.operator?.static ?? [],
     dynamicSecrets: ev?.operator?.dynamic ?? [],
     workloads: ev?.operator?.workloads ?? [],

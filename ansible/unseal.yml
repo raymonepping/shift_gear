@@ -48,8 +48,20 @@
       when: sg_seal_health.json.sealed | default(true)
       changed_when: not (sg_unseal_result.json.sealed | default(true))
 
+    - name: Re-read seal Vault health after unseal
+      ansible.builtin.uri:
+        url: "{{ sg_vault_seal_addr }}/v1/sys/health"
+        method: GET
+        ca_path: "{{ sg_ca_cert }}"
+        status_code: 200
+      register: sg_seal_health_after
+      until: sg_seal_health_after.status == 200
+      retries: 30
+      delay: 2
+      changed_when: false
+
     - name: Assert seal Vault is unsealed
       ansible.builtin.assert:
-        that: not (sg_seal_health.json.sealed | default(sg_unseal_result.json.sealed | default(true)))
+        that: not (sg_seal_health_after.json.sealed | default(true))
         fail_msg: "Seal Vault is still sealed — check .secrets/seal-init.json"
         quiet: true

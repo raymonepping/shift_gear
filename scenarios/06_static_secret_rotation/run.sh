@@ -3,7 +3,9 @@
 # Expected: VSO syncs the new KV version within ~30 s; workload-a rolls.
 set -euo pipefail
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
 source "${SCRIPT_DIR}/../../scripts/common.sh"
+sg_lock "$@"
 require_kubeconfig
 require_cmd oc jq
 
@@ -32,5 +34,7 @@ if [[ -n "${new_pod}" && "${new_pod}" != "${before_pod}" ]]; then
 else
   die "workload-a did not roll within 90 s — current pod: ${new_pod:-none}"
 fi
+
+oc -n sg-workloads rollout status deployment/workload-a --timeout=90s
 
 ok "Scenario 06 PASS: app-config updated, VSO synced, workload-a rolled"

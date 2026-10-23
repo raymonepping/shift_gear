@@ -23,23 +23,12 @@ Same rationale for `pod_cidr` from `networks.config.openshift.io/cluster`.
 
 ## D02 — No seal token on the cluster
 
-**Question:** Should Ansible write the unseal key to a Kubernetes Secret so that Vault pods
-can unseal themselves on restart?
-
-**Run:** Transit seal configuration in `vault/values.yaml`:
-```yaml
-seal:
-  - type: transit
-    address: "http://vault-seal-internal.sg-vault-seal.svc:8200"
-    key_name: autounseal
-    mount_path: transit/
-```
-
-**Decision:** No. The transit seal stanza in the Helm values handles auto-unseal without any
-operator action. The cluster Vault pods contact the seal Vault directly on restart.
-Writing an unseal key to a Kubernetes Secret would be a hard-coded credential in an object that
-Terraform can read back (a state leak). The `golden_ticket` project proved this pattern works;
-Shift Gear extends it to the OpenShift substrate.
+The transit seal in `deploy/vault/values.yaml` points to
+`https://seal-agent.sg-vault-seal.svc:8200` with a project-CA client certificate.
+Its placeholder token is replaced by the agent’s `api_proxy` using its own
+AppRole auto-auth token. Cluster pods therefore carry no seal-Vault token.
+The agent owns its short-lived in-memory token; the rotator replaces its
+secret-id every six hours.
 
 ---
 
@@ -52,7 +41,7 @@ one or two?
 
 | Root | Runs as | May not run as |
 |---|---|---|
-| `infra` | Anonymous (read-only) | Any token |
+| `infra` | Kubernetes identity from kubeconfig | Vault token |
 | `foundation` | kubeadmin | — |
 | `workloads` | kubeadmin | — |
 | `seal` | `sg-tf-seal` | `sg-tf-platform` |
@@ -62,7 +51,7 @@ one or two?
 least-privilege. Merging them would require a token that can both create the transit mount and
 write platform policies — that token would have too many capabilities.
 
-**Decision:** Five roots. Each has its own token, its own state file, and its own lifecycle.
+**Decision:** Five roots. Each has its own state file and lifecycle. Kubernetes roots use kubeconfig; seal and platform use distinct Vault bootstrap tokens.
 
 ---
 
@@ -73,8 +62,8 @@ write platform policies — that token would have too many capabilities.
 **Evidence:** `golden_ticket` prompt 03 execution log: minting tokens from Terraform root
 requires the root token in provider config. The root token ends up in Terraform state.
 
-**Decision:** Ansible mints the bootstrap tokens (`sg-tf-seal`, `sg-tf-platform`) using a
-token role (`sg-token-creator`) and writes them to `.secrets/tokens/`. Terraform reads them
+**Decision:** Ansible mints the bootstrap tokens (`sg-tf-seal`, `sg-tf-platform`) using
+policy-specific token roles (`sg-tf-seal` and `sg-tf-platform`) and writes them to `.secrets/tokens/`. Terraform reads them
 from disk (provider `token` = `file(.secrets/tokens/tf-seal)`). The root token never enters
 Terraform state.
 
@@ -92,8 +81,8 @@ the AppRole also be CIDR-restricted?
 
 **Decision:** Both. NetworkPolicy is Kubernetes-layer defence; CIDR restriction is Vault-layer
 defence. The pod CIDR (`10.217.0.0/22` on CRC) is discovered from the contract — no hardcoded
-value. `make boundary` checks that a token generated outside the pod CIDR is denied. The
-`sg-ui` token role also uses this CIDR so the API pod (within the cluster) can reach Vault but
+value. `make boundary` checks policy capabilities on 19 paths; it does not perform a CIDR-restricted login. The
+`sg-ui` token role also uses this CIDR so the sg-ui BFF pod (within the cluster) can reach Vault but
 a developer's laptop cannot use the UI token for direct Vault API calls.
 
 ---
@@ -116,16 +105,16 @@ is reachable.
 
 ## D07 — ConfigMap evidence path (not a PVC)
 
-**Question:** How does the Shift Gear API pod read the evidence files (`layers.json`,
+**Question:** How does the Shift Gear BFF pod read the evidence files (`layers.json`,
 `validation.json`, etc.) generated on the Mac?
 
-**Run:** `oc -n sg-app get pvc` — the API pod has no PVC; it is a stateless container.
-A mounted PVC would require a storage class with `ReadWriteMany`, which CRC does not provide
-by default.
+**Run:** `oc -n sg-app get pvc` — the sg-ui BFF pod has no PVC; it is a stateless container.
+A PVC does not expose the Mac’s generated evidence to the pod. A ConfigMap
+provides the required small, read-only bundle without a storage volume.
 
 **Decision:** Ansible `ux` phase syncs the `.build/*.json` files as entries in a ConfigMap
-(`sg-evidence` in `sg-app`). The ConfigMap is mounted as a volume in the API pod at
-`/app/evidence/`. On each `make ux` run, Ansible diffs the ConfigMap against the local
+(`sg-evidence` in `sg-app`). The ConfigMap is mounted as a volume in the sg-ui BFF pod at
+`/evidence/`. On each `make ux` run, Ansible diffs the ConfigMap against the local
 files and applies only the changed keys.
 
 ---
@@ -154,7 +143,7 @@ certificate issued at `T=0` with `notBefore = T` is rejected by a node that thin
 
 **Decision:** Set `notBefore = now - 1h` so that certs are valid 1 hour before their issuance
 time. This absorbs reasonable clock drift without materially weakening security (the cert is
-still a short-lived TLS cert, not a long-lived CA).
+issued leaf certificates last 365 days).
 
 ---
 
@@ -218,9 +207,23 @@ On `make reset`, the PVCs are deleted so a clean re-init is possible.
 
 **Question:** `ansible --check` fails on Keycloak federation tasks with `check mode not supported`.
 
-**Evidence:** The Keycloak `community.general.keycloak_user_federation` module does not
-implement `check_mode`. In check mode it raises `AnsibleError: check mode not supported`.
+**Decision:** Federation tasks use `when: not ansible_check_mode`, so dry-run
+passes skip them. Real reconciliation and the repeated real-run idempotency
+gate exercise them. This skip is not an exemption for identity in
+`scripts/idempotency-allow.txt`.
 
-**Decision:** All Keycloak federation tasks have `check_mode: false`. They are skipped in
-dry-run passes (`--check` with `--diff`) but are always applied in real runs. This is
-documented in `idempotency-allow.txt`.
+## D15 — Terraform owns the audit collector and both devices
+
+`terraform/workloads/main.tf` mounts the dependency-free Node program from a
+ConfigMap on a pinned UBI image. A source checksum rolls `sg-audit`; no builder
+is needed. `terraform/platform/main.tf` enables stdout and socket devices.
+The workloads rollout precedes the socket device, whose precondition requires
+the collector output. Stdout remains enabled while the collector restarts.
+
+## D16 — Keycloak root opens the application sign-in page
+
+An HAProxy sidecar redirects only the exact root path to
+`https://shiftgear.<apps_domain>/signin`. Other paths pass through to Keycloak
+with backend certificate verification. The Route stays reencrypt and its
+Service targets proxy port 8444. `KC_HOSTNAME_ADMIN` is absent; changing the
+admin hostname did not implement the requested landing page and broke startup.

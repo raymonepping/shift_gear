@@ -23,6 +23,9 @@ injector:
   enabled: false   # Shift Gear uses the Vault Secrets Operator and direct auth
 
 server:
+  serviceAccount:
+    create: true
+    name: vault
   image:
     repository: docker.io/hashicorp/vault-enterprise
     # amd64+arm64 manifest list; CRC on Apple Silicon is arm64

@@ -153,6 +153,15 @@ resource "kubernetes_deployment" "seal_agent" {
   # (agent phase), which asserts readiness; Terraform must not wait for it.
   wait_for_rollout = false
 
+  # Credential rotation deliberately annotates the pod template to trigger a
+  # rollout after replacing the AppRole secret-id.  Ansible owns that runtime
+  # marker, so Terraform must preserve it instead of reporting perpetual drift.
+  lifecycle {
+    ignore_changes = [
+      spec[0].template[0].metadata[0].annotations["shift-gear/credentials-rotated"],
+    ]
+  }
+
   timeouts {
     create = "5m"
     update = "5m"
@@ -261,7 +270,7 @@ resource "kubernetes_cron_job_v1" "seal_rotator" {
             # secret-id to the agent, then destroy the old ones.
             container {
               name    = "rotator"
-              image   = "image-registry.openshift-image-registry.svc:5000/openshift/cli:latest"
+              image   = data.terraform_remote_state.infra.outputs.images.cli
               command = ["/bin/sh", "/scripts/seal-rotate.sh"]
               env {
                 name  = "VAULT_ADDR"
@@ -354,7 +363,7 @@ resource "helm_release" "vault" {
 
 # ---------------------------------------------------------------------------
 # Identity NetworkPolicies
-# Keycloak: 8443 from the router namespaces AND from sg-vault (OIDC discovery)
+# Keycloak proxy: 8444 from router namespaces AND sg-vault (OIDC discovery)
 # OpenLDAP: 1389 from Keycloak pods AND from sg-vault pods (LDAP auth)
 # Management port 9000 is deliberately not permitted by any policy.
 # ---------------------------------------------------------------------------
@@ -372,6 +381,21 @@ resource "kubernetes_network_policy" "keycloak_ingress" {
       }
     }
     policy_types = ["Ingress"]
+    # BFF validates signed backchannel logout messages with the project CA.
+    ingress {
+      from {
+        namespace_selector {
+          match_labels = { "kubernetes.io/metadata.name" = "sg-app" }
+        }
+        pod_selector {
+          match_labels = { "app.kubernetes.io/name" = "sg-ui" }
+        }
+      }
+      ports {
+        port     = 8444
+        protocol = "TCP"
+      }
+    }
     # OpenShift router (reencrypt Route)
     ingress {
       from {
@@ -389,7 +413,7 @@ resource "kubernetes_network_policy" "keycloak_ingress" {
         }
       }
       ports {
-        port     = 8443
+        port     = 8444
         protocol = "TCP"
       }
     }
@@ -408,7 +432,7 @@ resource "kubernetes_network_policy" "keycloak_ingress" {
         }
       }
       ports {
-        port     = 8443
+        port     = 8444
         protocol = "TCP"
       }
     }
@@ -543,9 +567,9 @@ resource "kubernetes_deployment" "openldap" {
           name = "openldap"
           # Image built by the BuildConfig in terraform/foundation; the
           # ImageStream lookup policy (local=true) resolves the short tag.
-          # lifecycle.ignore_changes keeps Terraform from replacing the pod
-          # if a new build produces a new digest between applies.
-          image = "image-registry.openshift-image-registry.svc:5000/sg-identity/openldap:latest"
+          # Ansible publishes the built digest as a reviewed Terraform input.
+          # There is no image ignore_changes exemption.
+          image = coalesce(var.openldap_image, "image-registry.openshift-image-registry.svc:5000/sg-identity/openldap:latest")
           security_context {
             allow_privilege_escalation = false
             run_as_non_root            = true
@@ -622,6 +646,39 @@ resource "kubernetes_persistent_volume_claim" "keycloak" {
   }
 }
 
+# OpenShift Route annotations cannot express an exact-path HTTP redirect.
+# Keep the redirect in HAProxy; the entry point is the application sign-in page.
+resource "kubernetes_config_map_v1" "keycloak_proxy" {
+  metadata {
+    name      = "keycloak-proxy"
+    namespace = "sg-identity"
+    labels    = local.labels
+  }
+  data = {
+    "haproxy.cfg" = <<-CFG
+      global
+          log stdout format raw local0
+          nbthread 1
+          maxconn 256
+      defaults
+          mode http
+          log global
+          timeout connect 5s
+          timeout client 60s
+          timeout server 60s
+      frontend keycloak
+          bind :8444 ssl crt /tmp/keycloak.pem
+          http-request redirect location https://shiftgear.${local.apps_domain}/signin code 302 if { path / }
+          http-request set-header X-Forwarded-Proto https
+          http-request set-header X-Forwarded-Port 443
+          http-request set-header X-Forwarded-Host %[req.hdr(host)]
+          default_backend keycloak
+      backend keycloak
+          server keycloak 127.0.0.1:8443 ssl verify required ca-file /ca/ca.pem verifyhost keycloak.${local.apps_domain} sni str(keycloak.${local.apps_domain})
+    CFG
+  }
+}
+
 resource "kubernetes_service" "keycloak" {
   metadata {
     name      = "keycloak"
@@ -635,7 +692,7 @@ resource "kubernetes_service" "keycloak" {
     port {
       name        = "https"
       port        = 8443
-      target_port = 8443
+      target_port = 8444
       protocol    = "TCP"
     }
     # Management port is intentionally not exposed: no NodePort, no Route.
@@ -660,6 +717,9 @@ resource "kubernetes_deployment" "keycloak" {
     }
     template {
       metadata {
+        annotations = {
+          "checksum/proxy-config" = sha256(kubernetes_config_map_v1.keycloak_proxy.data["haproxy.cfg"])
+        }
         labels = merge(local.labels, {
           "app.kubernetes.io/name" = "keycloak"
         })
@@ -738,6 +798,72 @@ resource "kubernetes_deployment" "keycloak" {
           env {
             name  = "KC_HTTPS_CERTIFICATE_KEY_FILE"
             value = "/opt/keycloak/conf/tls/tls.key"
+          }
+          env {
+            name  = "KC_TRUSTSTORE_PATHS"
+            value = "/opt/keycloak/conf/trusted-ca"
+          }
+          volume_mount {
+            name       = "keycloak-ca"
+            mount_path = "/opt/keycloak/conf/trusted-ca"
+            read_only  = true
+          }
+        }
+        container {
+          name    = "keycloak-proxy"
+          image   = "docker.io/library/haproxy:3.0-alpine@sha256:56b887da77428b7a6621e59e480cdbd330cc805c22d3cedb66ceea76ffdea2c6"
+          command = ["/bin/sh", "-ec"]
+          args    = ["umask 077; cat /tls/tls.crt /tls/tls.key > /tmp/keycloak.pem; exec haproxy -W -db -f /usr/local/etc/haproxy/haproxy.cfg"]
+          security_context {
+            allow_privilege_escalation = false
+            run_as_non_root            = true
+            capabilities {
+              drop = ["ALL"]
+            }
+          }
+          port {
+            name           = "proxy-https"
+            container_port = 8444
+          }
+          resources {
+            requests = { cpu = "10m", memory = "64Mi" }
+            limits   = { memory = "128Mi" }
+          }
+          readiness_probe {
+            http_get {
+              path   = "/realms/master/.well-known/openid-configuration"
+              port   = 8444
+              scheme = "HTTPS"
+            }
+            period_seconds  = 5
+            timeout_seconds = 5
+          }
+          volume_mount {
+            name       = "keycloak-proxy"
+            mount_path = "/usr/local/etc/haproxy"
+            read_only  = true
+          }
+          volume_mount {
+            name       = "keycloak-tls"
+            mount_path = "/tls"
+            read_only  = true
+          }
+          volume_mount {
+            name       = "keycloak-ca"
+            mount_path = "/ca"
+            read_only  = true
+          }
+        }
+        volume {
+          name = "keycloak-proxy"
+          config_map {
+            name = kubernetes_config_map_v1.keycloak_proxy.metadata[0].name
+          }
+        }
+        volume {
+          name = "keycloak-ca"
+          config_map {
+            name = data.kubernetes_config_map_v1.sg_ca_identity.metadata[0].name
           }
         }
         volume {
@@ -842,7 +968,7 @@ resource "kubernetes_deployment" "postgres" {
           name = "postgres"
           # registry.redhat.io/rhel9/postgresql-16 — arm64, restricted-v2 safe.
           # Pinned by digest; update by bumping the tag + digest together.
-          image = "registry.redhat.io/rhel9/postgresql-16:latest"
+          image = "registry.redhat.io/rhel9/postgresql-16@sha256:791a6f14563178d1bbcd3515bc7dc80c1ae0788a829ff26551cdedbf8f50f0d2"
           security_context {
             allow_privilege_escalation = false
             run_as_non_root            = true
@@ -913,7 +1039,7 @@ resource "kubernetes_network_policy" "postgres_ingress" {
           match_expressions {
             key      = "app.kubernetes.io/name"
             operator = "In"
-            values   = ["workload-a", "workload-b"]
+            values   = ["workload-a", "workload-b", "sg-agent-db"]
           }
         }
       }
@@ -1084,7 +1210,7 @@ resource "kubernetes_deployment" "workload_a" {
         }
         container {
           name    = "workload-a"
-          image   = "registry.access.redhat.com/ubi9/ubi-micro:latest"
+          image   = "registry.access.redhat.com/ubi9/ubi-micro@sha256:5be877a2a280ae36eb9ab80ca4efb28bbf77c57abbba38137cdc37a03b8465e6"
           command = ["/bin/sh", "-c"]
           args = [<<-CMD
             echo "workload-a: app-config key names: $$(ls /etc/app-config/ 2>/dev/null | tr '\n' ' ')"
@@ -1169,7 +1295,7 @@ resource "kubernetes_deployment" "workload_b" {
         }
         container {
           name    = "workload-b"
-          image   = "registry.access.redhat.com/ubi9/ubi-micro:latest"
+          image   = "registry.access.redhat.com/ubi9/ubi-micro@sha256:5be877a2a280ae36eb9ab80ca4efb28bbf77c57abbba38137cdc37a03b8465e6"
           command = ["/bin/sh", "-c"]
           args = [<<-CMD
             DB_USER=$$(cat /etc/db-creds/username 2>/dev/null || echo "")
@@ -1247,7 +1373,7 @@ resource "kubernetes_config_map" "agent_demo_config" {
         }
         sink "file" {
           config = {
-            path = "/vault/secrets/.token"
+            path = "/vault/token/.token"
           }
         }
       }
@@ -1334,6 +1460,10 @@ resource "kubernetes_deployment" "agent_demo" {
             mount_path = "/vault/secrets"
           }
           volume_mount {
+            name       = "vault-token"
+            mount_path = "/vault/token"
+          }
+          volume_mount {
             name       = "sg-ca"
             mount_path = "/vault/userconfig/sg-ca"
             read_only  = true
@@ -1370,6 +1500,10 @@ resource "kubernetes_deployment" "agent_demo" {
             mount_path = "/vault/secrets"
           }
           volume_mount {
+            name       = "vault-token"
+            mount_path = "/vault/token"
+          }
+          volume_mount {
             name       = "sg-ca"
             mount_path = "/vault/userconfig/sg-ca"
             read_only  = true
@@ -1378,7 +1512,7 @@ resource "kubernetes_deployment" "agent_demo" {
         # App container — reads /vault/secrets/demo-secret, never Vault directly
         container {
           name    = "app"
-          image   = "registry.access.redhat.com/ubi9/ubi-micro:latest"
+          image   = "registry.access.redhat.com/ubi9/ubi-micro@sha256:5be877a2a280ae36eb9ab80ca4efb28bbf77c57abbba38137cdc37a03b8465e6"
           command = ["/bin/sh", "-c"]
           args = [<<-CMD
             echo "agent-demo: secret keys: $$(cat /vault/secrets/demo-secret 2>/dev/null | cut -d= -f1 | tr '\n' ' ')"
@@ -1417,7 +1551,12 @@ resource "kubernetes_deployment" "agent_demo" {
         }
         volume {
           name = "vault-secrets"
-          empty_dir {}
+          empty_dir { medium = "Memory" }
+        }
+        # The application's shared secret volume never contains the Agent token.
+        volume {
+          name = "vault-token"
+          empty_dir { medium = "Memory" }
         }
         volume {
           name = "sg-ca"
@@ -1478,8 +1617,8 @@ resource "kubernetes_manifest" "route_keycloak" {
 # ---------------------------------------------------------------------------
 # The console (sg-app): Nuxt 4 SPA + Nitro BFF, built in-cluster by ansible ux.
 # Observe-only: it reads evidence from ConfigMap sg-evidence and calls Vault
-# only for OIDC sign-in and the signed-in user's own requests. No Vault or
-# Kubernetes token of its own.
+# only for OIDC and signed-in requests. A dedicated projected Kubernetes
+# identity observes four named resources; no bootstrap token enters the BFF.
 # ---------------------------------------------------------------------------
 resource "kubernetes_deployment" "ui" {
   metadata {
@@ -1500,7 +1639,8 @@ resource "kubernetes_deployment" "ui" {
         }
       }
       spec {
-        automount_service_account_token = false
+        service_account_name            = "sg-ui-observer"
+        automount_service_account_token = true
         security_context {
           run_as_non_root = true
           seccomp_profile {
@@ -1510,7 +1650,7 @@ resource "kubernetes_deployment" "ui" {
         container {
           name = "ui"
           # Built by ansible ux; pulled again on every pod start.
-          image             = "image-registry.openshift-image-registry.svc:5000/sg-app/shift-gear-ui:latest"
+          image             = coalesce(var.ui_image, "image-registry.openshift-image-registry.svc:5000/sg-app/shift-gear-ui:latest")
           image_pull_policy = "Always"
           port {
             name           = "http"
@@ -1539,6 +1679,14 @@ resource "kubernetes_deployment" "ui" {
           env {
             name  = "NUXT_EVIDENCE_DIR"
             value = "/evidence"
+          }
+          env {
+            name  = "NUXT_METRICS_BACKEND"
+            value = var.metrics_backend
+          }
+          env {
+            name  = "NUXT_AUDIT_ARCHIVE_ENABLED"
+            value = tostring(var.audit_archive_enabled)
           }
           env {
             name  = "NUXT_AUDIT_API_BASE"
@@ -1656,7 +1804,11 @@ resource "kubernetes_config_map" "audit_collector" {
     labels    = merge(local.labels, { "app.kubernetes.io/name" = "sg-audit" })
   }
   data = {
-    "server.mjs" = local.audit_collector_source
+    "server.mjs"     = local.audit_collector_source
+    "lines.mjs"      = file("${path.module}/../../collector/lines.mjs")
+    "projection.mjs" = file("${path.module}/../../collector/projection.mjs")
+    "archive.mjs"    = file("${path.module}/../../collector/archive.mjs")
+    "metrics.mjs"    = file("${path.module}/../../collector/metrics.mjs")
   }
 }
 
@@ -1668,6 +1820,9 @@ resource "kubernetes_deployment" "audit_collector" {
   }
   spec {
     replicas = 1
+    strategy {
+      type = "Recreate"
+    }
     selector {
       match_labels = { "app.kubernetes.io/name" = "sg-audit" }
     }
@@ -1677,7 +1832,7 @@ resource "kubernetes_deployment" "audit_collector" {
         annotations = {
           "openshift.io/required-scc" = "restricted-v2"
           # A new collector program rolls the pod.
-          "shift-gear/collector-sha256" = sha256(local.audit_collector_source)
+          "shift-gear/collector-sha256" = sha256(join("", [local.audit_collector_source, file("${path.module}/../../collector/lines.mjs"), file("${path.module}/../../collector/projection.mjs"), file("${path.module}/../../collector/archive.mjs"), file("${path.module}/../../collector/metrics.mjs")]))
         }
       }
       spec {
@@ -1690,10 +1845,33 @@ resource "kubernetes_deployment" "audit_collector" {
         }
         container {
           name = "collector"
-          # registry.access.redhat.com/ubi9/nodejs-22-minimal, multi-arch
+          # Reviewed immutable Node runtime; explicit upgrade/rollback input.
           # manifest list (arm64 + amd64), pinned 2026-10-09.
-          image   = "registry.access.redhat.com/ubi9/nodejs-22-minimal@sha256:03b7dd64cafaaca5019c4cc1c36e05140b1650dab6cd5c4ab1fde9d88c0537ca"
+          image   = var.collector_image
           command = ["node", "/opt/collector/server.mjs"]
+          env {
+            name  = "ARCHIVE_DIR"
+            value = var.audit_archive_enabled ? "/var/lib/sg-audit" : ""
+          }
+          env {
+            name  = "ARCHIVE_MAX_BYTES"
+            value = "67108864"
+          }
+          env {
+            name  = "ARCHIVE_RETENTION_SECONDS"
+            value = "604800"
+          }
+          port {
+            name           = "metrics"
+            container_port = 8081
+          }
+          dynamic "volume_mount" {
+            for_each = var.audit_archive_enabled ? [1] : []
+            content {
+              name       = "archive"
+              mount_path = "/var/lib/sg-audit"
+            }
+          }
           port {
             name           = "ingest"
             container_port = 9090
@@ -1735,6 +1913,15 @@ resource "kubernetes_deployment" "audit_collector" {
             read_only  = true
           }
         }
+        dynamic "volume" {
+          for_each = var.audit_archive_enabled ? [1] : []
+          content {
+            name = "archive"
+            persistent_volume_claim {
+              claim_name = kubernetes_persistent_volume_claim_v1.audit_archive[0].metadata[0].name
+            }
+          }
+        }
         volume {
           name = "collector"
           config_map {
@@ -1761,6 +1948,11 @@ resource "kubernetes_service" "audit_collector" {
       target_port = 9090
     }
     port {
+      name        = "metrics"
+      port        = 8081
+      target_port = 8081
+    }
+    port {
       name        = "http"
       port        = 8080
       target_port = 8080
@@ -1782,6 +1974,17 @@ resource "kubernetes_network_policy" "audit_collector" {
       match_labels = { "app.kubernetes.io/name" = "sg-audit" }
     }
     policy_types = ["Ingress"]
+    ingress {
+      from {
+        pod_selector {
+          match_labels = { "shift-gear/audit-metrics-reader" = "true" }
+        }
+      }
+      ports {
+        port     = 8081
+        protocol = "TCP"
+      }
+    }
     ingress {
       from {
         namespace_selector {

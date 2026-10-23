@@ -13,6 +13,9 @@
 # ── Enterprise Namespace ──────────────────────────────────────────────────────
 resource "vault_namespace" "shift_gear" {
   path = "shift-gear"
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # ── KV v2 — application secrets (values written by Ansible, never Terraform) ─
@@ -36,6 +39,10 @@ resource "vault_mount" "transit" {
   path        = "transit"
   type        = "transit"
   description = "Encryption-as-a-service for Shift Gear workloads"
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "vault_transit_secret_backend_key" "app_data" {
@@ -61,6 +68,10 @@ resource "vault_mount" "pki" {
 
   default_lease_ttl_seconds = 315360000 # 10 years
   max_lease_ttl_seconds     = 315360000
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "vault_pki_secret_backend_root_cert" "root" {
@@ -92,6 +103,10 @@ resource "vault_mount" "pki_int" {
 
   default_lease_ttl_seconds = 3600  # 1 h default; role max_ttl = 4 h
   max_lease_ttl_seconds     = 14400 # 4 h
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "vault_pki_secret_backend_intermediate_cert_request" "pki_int" {

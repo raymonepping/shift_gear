@@ -27,32 +27,9 @@ CLUSTER_ADDR="https://vault.${APPS_DOMAIN}"
 
 # token-file | vault-addr | path | expectation (allow/deny:capability)
 # 19 checks: 5 + 4 on the seal Vault, 5 + 5 on the cluster (namespace shift-gear).
-NS="shift-gear"
-checks=(
-  # sg-tf-seal: builds the seal structure; never a secret-id, never its own policy
-  "tf-seal|${SEAL_ADDR}|sys/mounts/transit|allow:create"
-  "tf-seal|${SEAL_ADDR}|transit/keys/autounseal|allow:create"
-  "tf-seal|${SEAL_ADDR}|auth/approle/role/sg-seal-autounseal|allow:create"
-  "tf-seal|${SEAL_ADDR}|auth/approle/role/sg-seal-autounseal/secret-id|deny:update"
-  "tf-seal|${SEAL_ADDR}|sys/policies/acl/sg-tf-seal|deny:update"
-  # sg-ansible-seal: mints secret-ids, reads role-ids; never a mount or policy
-  "ansible-seal|${SEAL_ADDR}|auth/approle/role/sg-seal-autounseal/secret-id|allow:update"
-  "ansible-seal|${SEAL_ADDR}|auth/approle/role/sg-seal-autounseal/role-id|allow:read"
-  "ansible-seal|${SEAL_ADDR}|sys/mounts/transit|deny:create"
-  "ansible-seal|${SEAL_ADDR}|sys/policies/acl/autounseal|deny:update"
-  # sg-tf-platform: mounts + policies; never auth, never secret data, never delete kv/
-  "tf-platform|${CLUSTER_ADDR}|${NS}/sys/mounts/transit|allow:create"
-  "tf-platform|${CLUSTER_ADDR}|${NS}/sys/policies/acl/sg-engineer|allow:update"
-  "tf-platform|${CLUSTER_ADDR}|${NS}/sys/auth/kubernetes|deny:create"
-  "tf-platform|${CLUSTER_ADDR}|${NS}/kv/data/shift-gear/config/app-config|deny:read"
-  "tf-platform|${CLUSTER_ADDR}|${NS}/sys/mounts/kv|deny:delete"
-  # sg-ansible-platform: auth + secret data; never a mount, never a policy
-  "ansible-platform|${CLUSTER_ADDR}|${NS}/sys/auth/kubernetes|allow:create"
-  "ansible-platform|${CLUSTER_ADDR}|${NS}/kv/data/shift-gear/config/app-config|allow:create"
-  "ansible-platform|${CLUSTER_ADDR}|${NS}/sys/mounts/transit|deny:create"
-  "ansible-platform|${CLUSTER_ADDR}|${NS}/sys/policies/acl/sg-engineer|deny:update"
-  "ansible-platform|${CLUSTER_ADDR}|${NS}/sys/policies/acl/sg-ansible-platform|deny:update"
-)
+mapfile -t checks < <(jq -r --arg seal "${SEAL_ADDR}" --arg cluster "${CLUSTER_ADDR}" \
+  '.[] | [.token, (if .vault == "vault-seal" then $seal else $cluster end), .path, .expect] | join("|")' \
+  "${ROOT_DIR}/policies/boundary-matrix.json")
 
 fails=0 checked=0
 printf '%-22s %-14s %-55s %-13s %-8s\n' TOKEN VAULT PATH EXPECT RESULT

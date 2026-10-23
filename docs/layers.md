@@ -14,7 +14,7 @@ fully or fails with an explicit error. On failure, `lab.sh` prints the exact com
 | **Inputs** | Running CRC cluster; `var.api_url`; `var.kubeconfig_path` |
 | **Outputs** | `.build/terraform/infra.json` — `cluster.apps_domain`, `cluster.pod_cidr`, `cluster.kubeconfig_path`, `cluster.ingress_ca_path`, `cluster.registry_host` |
 | **State** | `.secrets/terraform/infra/terraform.tfstate` |
-| **Creates** | Nothing — read-only discovery |
+| **Creates** | Cluster discovery and a local ingress-CA file |
 | **Idempotency** | Plan always empty on second run (data sources only) |
 | **Resume** | `make infra` |
 
@@ -56,7 +56,7 @@ fully or fails with an explicit error. On failure, `lab.sh` prints the exact com
 | **Root** | `terraform/workloads/` |
 | **Inputs** | `foundation.json`; `infra.json`; Secrets created in `prepare` |
 | **Outputs** | `.build/terraform/workloads.json` — seal Vault address, cluster Vault address |
-| **Creates** | Vault seal Helm release (1 node); Vault cluster Helm release (3 nodes); seal-agent Deployment; rotator CronJob; OpenLDAP Deployment + PVC; Keycloak Deployment + PVC; PostgreSQL StatefulSet; NetworkPolicies (allow rules); VSO VaultConnection + VaultAuth + VaultStaticSecret + VaultDynamicSecret; workload-a + workload-b Deployments; agent-demo Deployment |
+| **Creates** | Vault seal Helm release (1 node); Vault cluster Helm release (3 nodes); seal-agent Deployment; rotator CronJob; OpenLDAP Deployment + PVC; Keycloak Deployment + PVC; PostgreSQL Deployment + PVC; NetworkPolicies (allow rules); VSO VaultConnection + VaultAuth + VaultStaticSecret + VaultDynamicSecret; workload-a + workload-b Deployments; agent-demo Deployment; sg-ui Deployment/Service/Route; sg-audit ConfigMap/Deployment/Service/NetworkPolicy |
 | **Idempotency** | Helm releases compare values + chart version; plan empty on second run |
 | **Resume** | `make workloads` |
 
@@ -70,7 +70,7 @@ fully or fails with an explicit error. On failure, `lab.sh` prints the exact com
 | **Role** | `sg_seal_init` |
 | **Inputs** | `workloads.json` (seal Vault address); TLS CA |
 | **Outputs** | `.secrets/tokens/tf-seal`, `.secrets/tokens/ansible-seal`; `.build/seal-init.json` (init result, no_log) |
-| **Does** | Initialises seal Vault (1 share, threshold 1); unseals; enables transit auth method; creates bootstrap policies (`sg-tf-seal.hcl`, `sg-ansible-seal.hcl`); mints bootstrap tokens; writes tokens to `.secrets/tokens/` |
+| **Does** | Initialises seal Vault (1 share, threshold 1); unseals; enables AppRole auth; creates bootstrap policies (`sg-tf-seal.hcl`, `sg-ansible-seal.hcl`); mints bootstrap tokens; writes tokens to `.secrets/tokens/` |
 | **Idempotency** | Skips init if already initialised; skips token creation if tokens exist and are valid |
 | **Resume** | `make seal-init` |
 
@@ -101,7 +101,7 @@ fully or fails with an explicit error. On failure, `lab.sh` prints the exact com
 | **Outputs** | Kubernetes Secret `seal-agent-approle` (role-id + secret-id); `.build/agent-proof.json` |
 | **Does** | Reads AppRole role-id; generates secret-id; writes them to `seal-agent-approle` Secret; verifies the agent can authenticate and reach the transit key; sets rotator credentials |
 | **Token** | `sg-ansible-seal` — may mint secret-ids; may NOT create mounts |
-| **Idempotency** | Secret-ids are single-use; a new one is generated each run (this is intentional — the old one is expired) |
+| **Idempotency** | Existing IDs are checked with lookup and reused; absent or expired IDs are replaced |
 | **Resume** | `make agent` |
 
 ---
@@ -114,7 +114,7 @@ fully or fails with an explicit error. On failure, `lab.sh` prints the exact com
 | **Role** | `sg_bootstrap` |
 | **Inputs** | `workloads.json` (cluster Vault address); TLS CA |
 | **Outputs** | `.secrets/tokens/tf-platform`, `.secrets/tokens/ansible-platform`; `.build/bootstrap.json` |
-| **Does** | Initialises cluster Vault (1 share for demo, stored encrypted by Vault); raft join for vault-1, vault-2; enables transit seal auto-unseal; creates platform bootstrap policies; mints four bootstrap tokens |
+| **Does** | Initialises the transit-sealed cluster (3 recovery shares, threshold 2); joins vault-1 and vault-2; creates platform bootstrap policies; mints or renews two platform bootstrap tokens |
 | **Idempotency** | Skips if already initialised; token creation is idempotent via token role |
 | **Resume** | `make bootstrap` |
 
@@ -128,7 +128,7 @@ fully or fails with an explicit error. On failure, `lab.sh` prints the exact com
 | **Root** | `terraform/platform/` |
 | **Inputs** | `workloads.json`; `.secrets/tokens/tf-platform` |
 | **Outputs** | `.build/terraform/platform.json` |
-| **Creates** | Vault enterprise namespace `shift-gear`; mounts: `kv`, `transit`, `pki-int`, `database`, `sys/audit`; PKI intermediate CA; policies: `sg-engineer`, `sg-operator`, `sg-approver`, `sg-auditor`, `sg-vso`, `sg-api`, `sg-agent-demo`; `sg-ui` token role (CIDR-bound to pod_cidr); file audit device |
+| **Creates** | Vault enterprise namespace `shift-gear`; mounts: `kv`, `transit`, `pki`, `pki-int`, `database`; PKI root and intermediate structure; policies: `sg-engineer`, `sg-operator`, `sg-approver`, `sg-auditor`, `sg-vso`, `sg-api`, `sg-agent-demo`; `sg-ui` token role (CIDR-bound to pod_cidr); root-level file (stdout) and socket audit devices |
 | **Token** | `sg-tf-platform` — may create mounts and policies; may NOT enable auth or write KV data |
 | **Idempotency** | Plan empty on second run |
 | **Resume** | `make platform` |
@@ -155,7 +155,7 @@ fully or fails with an explicit error. On failure, `lab.sh` prints the exact com
 | **Tool** | Ansible |
 | **Role** | `sg_configure` |
 | **Inputs** | `platform.json`; `.secrets/tokens/ansible-platform`; `infra.json` |
-| **Does** | Enables Kubernetes auth (sg-api role, sg-agent-demo role); configures AppRole (sg-automation); configures cert auth (internal-client); DB secrets engine (PostgreSQL, demo-reader role); KV seeds (`app-config`, `agent-demo`); socket audit device; seeds KV for agent demo |
+| **Does** | Enables Kubernetes auth (sg-api role, sg-agent-demo role); configures AppRole (sg-automation); configures cert auth (internal-client); DB secrets engine (PostgreSQL, demo-reader role); KV seeds (`app-config`, `agent-demo`); seeds KV for agent demo |
 | **Idempotency** | All tasks are idempotent; `changed=0` on second run |
 | **Resume** | `make configure` |
 
@@ -168,8 +168,8 @@ fully or fails with an explicit error. On failure, `lab.sh` prints the exact com
 | **Tool** | Ansible |
 | **Role** | `sg_ux` |
 | **Inputs** | Evidence files under `.build/`; `infra.json` |
-| **Does** | Triggers BuildConfig for the UI image; waits for the build to complete; syncs evidence files as a ConfigMap (`sg-evidence`) into `sg-app`; restarts the API deployment to pick up new evidence |
-| **Idempotency** | Build is only triggered when Dockerfile or source has changed (BuildConfig source hash); evidence sync is `changed=0` when evidence files are unchanged |
+| **Does** | Triggers BuildConfig for the UI image; waits for the build to complete; syncs evidence files as a ConfigMap (`sg-evidence`) into `sg-app`; replaces the sg-ui pod only after a new image build, then waits for the mounted evidence timestamp |
+| **Idempotency** | Build is only triggered when Dockerfile or source has changed (BuildConfig source hash); evidence sync reports changed because snapshots carry a new timestamp; this is the named idempotency exception |
 | **Resume** | `make ux` |
 
 ---
@@ -194,7 +194,7 @@ fully or fails with an explicit error. On failure, `lab.sh` prints the exact com
 |---|---|---|
 | `idempotency` | Every Ansible phase: `changed=0` (exceptions in `idempotency-allow.txt`) | `.build/gates/idempotency.json` |
 | `secret-scan` | Grep for token patterns, PEM keys, licence prefix in tracked files | `.build/gates/secret-scan.json` |
-| `boundary` | 19 `sys/capabilities-self` checks across all four bootstrap tokens | stdout only (no gate file) |
+| `drift` | Terraform plans on five roots (`TF_ONLY=1` during `make lab`) | `.build/gates/drift.json` |
 
 ---
 
@@ -202,4 +202,4 @@ fully or fails with an explicit error. On failure, `lab.sh` prints the exact com
 
 1. Add a line to `scripts/phases.txt`: `tf <root>` or `ansible <playbook>`.
 2. Create the Terraform root or Ansible playbook.
-3. The phase is automatically picked up by `lab.sh`, `idempotency.sh`, `drift.sh`, and `layers.sh`.
+3. The phase is automatically picked up by `lab.sh`, `idempotency.sh`, `drift.sh`, and `evidence.py`.

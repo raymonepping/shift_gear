@@ -22,7 +22,7 @@ export default defineEventHandler(async (event) => {
   setCookie(event, 'sg_oidc_nonce', nonce, {
     httpOnly: true,
     sameSite: 'lax',
-    secure: getRequestProtocol(event, { xForwardedProto: true }) === 'https',
+    secure: String(cfg.oidcRedirectUri).startsWith('https://'),
     path: '/auth',
     maxAge: 600,
   })

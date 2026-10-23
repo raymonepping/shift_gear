@@ -86,23 +86,24 @@
             annotations:
               shift-gear/source-digest: "{{ sg_ux_src.stdout }}"
 
-    # Replace the pod, not the Deployment's template (Terraform's): the new
-    # pod pulls :latest (imagePullPolicy Always).
-    - name: Replace the console pod so it runs the new image
-      kubernetes.core.k8s:
-        kubeconfig: "{{ sg_ux_kubeconfig }}"
-        state: absent
-        api_version: v1
-        kind: Pod
-        namespace: "{{ sg_ux_namespace }}"
-        label_selectors:
-          - app.kubernetes.io/name=sg-ui
-
   always:
     - name: Remove the staged build context
       ansible.builtin.file:
         path: "{{ sg_ux_stage }}"
         state: absent
+
+- name: Pin the ui build to its immutable image input
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ playbook_dir }}/../scripts/pin-built-image.py"
+      - ui
+      - "{{ '--check' if ansible_check_mode else '--reconcile' }}"
+  environment:
+    KUBECONFIG: "{{ sg_ux_kubeconfig }}"
+  register: sg_ux_image_pin
+  changed_when: sg_ux_image_pin.stdout == 'changed'
+  check_mode: false
 
 - name: Collect the evidence snapshot (.build/evidence.json)
   ansible.builtin.command:
@@ -180,11 +181,21 @@
       register: sg_ux_pods
 
     - name: Read the evidence timestamp the console sees
-      kubernetes.core.k8s_exec:
-        kubeconfig: "{{ sg_ux_kubeconfig }}"
-        namespace: "{{ sg_ux_namespace }}"
-        pod: "{{ (sg_ux_pods.resources | first).metadata.name }}"
-        command: cat /evidence/evidence.json
+      ansible.builtin.command:
+        argv:
+          - timeout
+          - '15'
+          - oc
+          - --request-timeout=10s
+          - --kubeconfig
+          - "{{ sg_ux_kubeconfig }}"
+          - -n
+          - "{{ sg_ux_namespace }}"
+          - exec
+          - "{{ (sg_ux_pods.resources | rejectattr('metadata.deletionTimestamp', 'defined') | first).metadata.name }}"
+          - --
+          - cat
+          - /evidence/evidence.json
       register: sg_ux_served
       until: >-
         sg_ux_served.rc | default(1) == 0 and

@@ -206,7 +206,7 @@ resource "kubernetes_network_policy" "seal_agent_ingress" {
   }
 }
 
-# vault-seal accepts :8200 from seal-agent, seal-rotator pods, and the router
+# vault-seal accepts :8200 from seal-agent, seal-rotator, UI observer and router
 resource "kubernetes_network_policy" "vault_seal_ingress" {
   metadata {
     name      = "vault-seal-ingress"
@@ -223,6 +223,22 @@ resource "kubernetes_network_policy" "vault_seal_ingress" {
       }
     }
     policy_types = ["Ingress"]
+    # Only the UI BFF may read public TLS-verified health metadata directly.
+    # It carries no Seal Vault token or seal-agent mTLS client credential.
+    ingress {
+      from {
+        namespace_selector {
+          match_labels = { "kubernetes.io/metadata.name" = "sg-app" }
+        }
+        pod_selector {
+          match_labels = { "app.kubernetes.io/name" = "sg-ui" }
+        }
+      }
+      ports {
+        port     = 8200
+        protocol = "TCP"
+      }
+    }
     ingress {
       from {
         pod_selector {
@@ -476,7 +492,7 @@ resource "kubernetes_manifest" "vso_subscription" {
       name                = "vault-secrets-operator"
       source              = "certified-operators"
       sourceNamespace     = "openshift-marketplace"
-      installPlanApproval = "Automatic"
+      installPlanApproval = "Manual"
     }
   }
 }
@@ -539,26 +555,19 @@ resource "kubernetes_cluster_role_binding" "vault_token_reviewer" {
   }
   subject {
     kind      = "ServiceAccount"
-    name      = kubernetes_service_account.vault_token_reviewer.metadata[0].name
+    name      = "vault"
     namespace = kubernetes_namespace.sg_vault.metadata[0].name
   }
 }
 
-# Long-lived token: kubernetes.io/service-account-token is stable across
-# rotations and does not require a pod to project it. Vault stores this
-# value once during configure (ansible configure) and never needs it again.
-resource "kubernetes_secret" "vault_token_reviewer" {
-  metadata {
-    name      = "vault-token-reviewer-token"
-    namespace = kubernetes_namespace.sg_vault.metadata[0].name
-    labels    = local.labels
-    annotations = {
-      "kubernetes.io/service-account.name" = kubernetes_service_account.vault_token_reviewer.metadata[0].name
-    }
+# Forget the legacy value-bearing resource without disrupting a running auth
+# mount. Ansible switches Vault to its projected local reviewer and then retires
+# the old Secret. Backups remain confidential and are never silently erased.
+removed {
+  from = kubernetes_secret.vault_token_reviewer
+  lifecycle {
+    destroy = false
   }
-  type = "kubernetes.io/service-account-token"
-  # The token is auto-populated by the API server; never set in state.
-  wait_for_service_account_token = true
 }
 
 # ServiceAccounts for sg-app workloads

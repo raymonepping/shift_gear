@@ -18,3 +18,10 @@ output "cluster" {
     registry_host   = "image-registry.openshift-image-registry.svc:5000"
   }
 }
+
+output "images" {
+  description = "Substrate-provided immutable build/runtime dependencies, separate from the connection contract."
+  value = {
+    cli = data.kubernetes_resource.cli_image.object.image.dockerImageReference
+  }
+}

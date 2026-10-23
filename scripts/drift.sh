@@ -6,6 +6,8 @@ set -euo pipefail
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "${SCRIPT_DIR}/common.sh"
+sg_lock "$@"
+sg_gate_context
 # shellcheck source=phases.sh
 source "${SCRIPT_DIR}/phases.sh"
 require_cmd jq
@@ -37,6 +39,8 @@ while read -r tool name; do
       changed="$(jq -r '.changed_total' "${BUILD_DIR}/ansible-stats/${name}.check.json" 2>/dev/null || echo '?')"
       if [[ "${changed}" == "0" ]]; then
         rows+=("${name}|ansible|clean|check mode changed=0")
+      elif python3 "${SCRIPT_DIR}/allowed-changes.py" "${BUILD_DIR}/ansible-stats/${name}.check.json"; then
+        rows+=("${name}|ansible|clean|check mode changed=${changed} (documented exception)")
       else
         hosts="$(jq -r '[.hosts | to_entries[] | select(.value.changed > 0) | "\(.key)=\(.value.changed)"] | join(" ")' \
           "${BUILD_DIR}/ansible-stats/${name}.check.json" 2>/dev/null || echo '')"
@@ -58,10 +62,11 @@ done
 
 mkdir -p "${BUILD_DIR}/gates"
 jq -n \
+  --arg run_id "${SG_RUN_ID:-standalone}" --arg cluster_id "${SG_CLUSTER_ID:-unknown}" \
   --arg result "$([[ ${fails} -eq 0 ]] && echo pass || echo fail)" \
   --arg scope "$([[ "${TF_ONLY:-0}" == "1" ]] && echo terraform || echo all)" \
   --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  '{gate: "drift", scope: $scope, result: $result, at: $at}' \
+  '{run_id: $run_id, cluster_id: $cluster_id, gate: "drift", scope: $scope, result: $result, at: $at}' \
   >"${BUILD_DIR}/gates/drift.json"
 
 [[ ${fails} -eq 0 ]] || die "${fails} layer(s) drifted."

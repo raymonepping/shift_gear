@@ -175,7 +175,7 @@ function evidenceSource(row: LayerRow): string {
 </template>
 
 <style scoped>
-.gate-strip { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+.gate-strip { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: 10px; }
 .gate { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; padding: 12px 14px; border-radius: 12px; background: var(--vg-well); border: 1px solid var(--vg-border-subtle); }
 .gate-name { font-weight: 680; color: var(--vg-text-primary); }
 .gate-age { grid-column: 1 / -1; font-size: 12px; color: var(--vg-text-muted); font-variant-numeric: tabular-nums; }
@@ -204,5 +204,10 @@ function evidenceSource(row: LayerRow): string {
   .layer-fact { grid-area: f; }
   .layer-dur { display: none; }
   .layer-row > .door-chip { grid-area: c; justify-self: end; }
+}
+@media (max-width: 360px) {
+  .layer-row { grid-template-columns: 24px minmax(0, 1fr); grid-template-areas: "i t" "n n" "f f" "c c"; }
+  .layer-name, .layer-fact, .gate-source { overflow-wrap: anywhere; min-width: 0; }
+  .gate { grid-template-columns: minmax(0, 1fr); }
 }
 </style>

@@ -7,6 +7,7 @@ mock_provider "kubernetes" {
   mock_data "kubernetes_resource" {
     defaults = {
       object = {
+        image = { dockerImageReference = "quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
         spec = {
           domain = "apps-crc.testing"
         }

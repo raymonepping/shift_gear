@@ -9,7 +9,8 @@ export default defineEventHandler(async (event) => {
   const ev = await readEvidence()
 
   return {
-    observedAt: ev?.observedAt ?? new Date().toISOString(),
+    observedAt: ev?.observedAt ?? null,
+    evidence: ev?.evidence,
     pods: ev?.pods?.cards ?? [],
   } satisfies PodsResponse
 })

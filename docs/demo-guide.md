@@ -17,7 +17,8 @@ make identity-show-user PERSON=ada
 ```
 
 Open `https://vault.apps-crc.testing`, click **Sign in with OIDC**. Enter `ada` and the
-password. You land on `ada`'s token with policies `sg-engineer` and `sg-staff`.
+password. You land on `ada`'s token with the `sg-engineer` identity policy. The
+`staff` directory group carries no policy.
 
 **What to say:** Vault is on OpenShift. The URL is a Route — TLS passthrough from the
 ingress controller to the Vault pod. No load balancer required.
@@ -26,16 +27,14 @@ ingress controller to the Vault pod. No load balancer required.
 
 Open `https://shiftgear.apps-crc.testing`. The Fleet page appears.
 
-**What to say:** The console pulls live data from the OpenShift API (through the Shift Gear
-API's BFF). The tiles show pod count, CPU and memory totals for the workloads Terraform root.
-Every number traces back to the `terraform/workloads/` output.
+**What to say:** The console reads the evidence snapshot collected by `scripts/evidence.py` and published by `make ux`. The tiles show the observed pod and resource totals; they do not poll the OpenShift API directly.
 
 ### 2:30 — Layers page
 
 Click **Layers**.
 
 **What to say:** Thirteen phases — five Terraform roots, eight Ansible playbooks, in order.
-The gates below the phases show idempotency, secret-scan, boundary, and drift. Each phase has
+The gates below the phases show idempotency, drift, secret-scan, and validation. Each phase has
 an expand arrow showing what it owns and its last duration.
 
 ### 4:00 — Static secret rotation
@@ -47,8 +46,7 @@ make wl-a-rotate
 ```
 
 Back in the Shift Gear console, click **Operator** and watch the `app-config` `VaultStaticSecret`
-`lastSyncTime` update. Switch to the **Fleet** page and watch `workload-a` roll (one new pod
-replaces the old one within ~30 seconds).
+`lastSyncTime` after running `make ux` to publish a new snapshot. Fleet and Operator views show observed state; use `make vso-status` for current cluster status.
 
 **What to say:** No token in the workload pod. The Vault Secrets Operator authenticated with
 Kubernetes auth (projected SA token). The pod sees a Kubernetes `Secret` — it has no Vault
@@ -61,22 +59,24 @@ address in its environment.
 make vso-status
 ```
 
-Revoke the lease from the Vault UI (navigate to `database/creds/demo-reader` → Leases →
-revoke). Switch back to the console **Operator** page. Within the `renewalPercent` cycle
-(~60 s) VSO requests a new credential, the `db-creds` Secret is updated, and `workload-b`
-reads the new username without restarting.
+Run `bash scenarios/07_dynamic_credential_revoked/run.sh` to revoke the actual
+lease from the `VaultDynamicSecret` status and check both credential replacement
+and old PostgreSQL role removal. The next renewal is scheduled at 67% of a
+five-minute lease; the proof allows 240 seconds. Run `make ux` afterwards to
+publish the observed state on Operator.
 
-**What to say:** Dynamic credentials have a TTL. VSO renews them at 80% of TTL. Revoking
-forces an immediate refresh — the workload continues with a new credential.
+**What to say:** Dynamic credentials have a TTL. Revocation removes the old
+PostgreSQL role. VSO discovers it on reconciliation and fetches a new credential,
+then rolls workload-b through its configured restart target.
 
 ### 7:00 — Vault HA failover
 
 ```sh
-oc -n sg-vault delete pod vault-0
+bash scenarios/01_kill_active/run.sh
 ```
 
-Click the **Cluster** page in the console. The active node icon moves from `vault-0` to
-`vault-1` (or `vault-2`) within a few seconds.
+Run `make ux`, then click **Cluster**. The refreshed snapshot shows the newly elected leader. The script chooses the
+actual active pod; deleting a fixed pod name could merely delete a standby.
 
 ```sh
 make verify
@@ -88,15 +88,12 @@ a cluster node does not require any unseal action. The seal chain is unaffected.
 ### 8:30 — Seal chain
 
 ```sh
-oc -n sg-vault-seal delete pod -l app=seal-agent
+oc -n sg-vault-seal delete pod -l app.kubernetes.io/name=seal-agent
 ```
 
-The seal-agent pod restarts, re-authenticates with AppRole, and is ready within ~10 seconds.
+The seal-agent pod restarts, re-authenticates with AppRole, and authenticates without operator intervention.
 
-**What to say:** The seal agent holds the AppRole secret-id, not a Vault token. The cluster
-Vault never had the secret-id. If the agent pod is deleted, the cluster Vault is unaffected —
-it already has the transit key lease. The agent's job is to handle rotation, not to hold
-an ongoing credential.
+**What to say:** The seal agent authenticates with AppRole and keeps its short-lived token in memory. Cluster pods carry no seal-Vault token. Restarting the agent does not reseal an already-unsealed cluster; new unseal operations need the agent available.
 
 ### 9:30 — Layers gate: boundary
 
@@ -117,7 +114,7 @@ boundary is enforced by Vault policy — not by convention.
 | Time | Action | One-liner |
 |---|---|---|
 | 0:00 | Sign in as `ada` via OIDC | Vault on OpenShift; Route + TLS passthrough |
-| 0:30 | Fleet page | Live tile data from the OpenShift API |
+| 0:30 | Fleet page | Observed tile data from the latest evidence snapshot |
 | 1:00 | `make wl-a-rotate` | Watch app-config sync and workload-a roll |
 | 2:00 | Revoke dynamic credential | VSO fetches new one; workload-b continues |
 | 3:00 | Kill vault-0 pod | Cluster page shows new active leader |
@@ -130,10 +127,10 @@ boundary is enforced by Vault policy — not by convention.
 
 | User | Groups | Vault policies | Auth method |
 |---|---|---|---|
-| `ada` | engineers, staff | `sg-engineer`, `sg-staff` | OIDC (Keycloak), LDAP |
-| `ben` | staff | `sg-staff` | OIDC, LDAP |
-| `cleo` | operators, staff | `sg-operator`, `sg-staff` | OIDC, LDAP |
-| `dirk` | approvers, operators, staff | `sg-approver`, `sg-operator`, `sg-staff` | OIDC, LDAP |
+| `ada` | engineers, staff | `sg-engineer` | OIDC (Keycloak), LDAP |
+| `ben` | staff | none (`staff` is a grouping group) | OIDC, LDAP |
+| `cleo` | operators, staff | `sg-operator` | OIDC, LDAP |
+| `dirk` | approvers, operators, staff | `sg-approver`, `sg-operator` | OIDC, LDAP |
 | `finn` | auditors | `sg-auditor` | OIDC, LDAP |
 
 Sign in as any of them: `make identity-show-user PERSON=<name>`.
@@ -146,5 +143,28 @@ Sign in as any of them: `make identity-show-user PERSON=<name>`.
 |---|---|
 | Vault UI unreachable | "CRC is a single VM — let me check if it went to sleep." `make crc-up && make up` |
 | VSO not syncing | "This is the CSV gate in action — the operator isn't ready. `make vso-status`" |
-| `make verify` shows ✗ on gate | "The gate file is stale. `make validate` regenerates it." |
+| `make verify` shows ✗ on a gate | Inspect the named gate’s output; run its own target. `make validate` only regenerates validation. |
 | `make boundary` fails | "A token was rotated and the file is stale. `make seal-init && make bootstrap`" |
+
+## Scenario inventory
+
+| Scenario | What the script exercises |
+| --- | --- |
+| 01 | Active pod deletion and unsealed rejoin |
+| 02 | Seal-agent restart with cluster health probes |
+| 03 | Two rotator Jobs and secret-id lookup/list |
+| 04 | Seal-Vault restart and manual unseal |
+| 05 | Full down/up including VM stop/start |
+| 06 | KV source rotation, Secret sync and workload-a rollout |
+| 07 | Dynamic credential replacement and old-role removal |
+| 08 | Four reversible drift mutations with detection and restoration checks |
+| 09 | Hand-edit app-config; VSO restored the Vault value in 6 s in the proof run |
+
+Run results and timings from 2026-10-09 are recorded in roadmap 03_01.
+
+## Audit page moment
+
+Sign in as finn and open Audit. Signing in generates audited requests, and the
+page reads the collector live through the BFF. It shows request metadata and
+the names of HMAC-protected fields, not those secret values. Its buffer and
+counters reset on collector restart. Every signed-in persona can read this view.

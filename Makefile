@@ -111,7 +111,7 @@ secret-scan: ## Scan for leaked secrets: known values, hv[sbr] tokens, PEM keys,
 boundary: ## Prove tool boundary: 19 sys/capabilities-self checks across all four bootstrap tokens
 	@./scripts/boundary-check.sh
 
-rotation-proof: ## Rotate the seal agent AppRole secret-id twice; prove old=400, current=200, count=1
+rotation-proof: ## Rotate the seal agent AppRole secret-id twice; prove previous ID absent, current lookup=200, count=1
 	@./scripts/rotation-proof.sh
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────────
@@ -188,10 +188,77 @@ ui-test: ## Playwright journeys + axe WCAG 2.1 AA at 1440×900 and 390×844 (pas
 	@./scripts/ui-test.sh --grep-invert '@failover|@screens'
 
 ui-test-failover: ## Run the @failover Playwright test (requires ENABLE_FAILOVER_TEST=true)
-	@ENABLE_FAILOVER_TEST=true ./scripts/ui-test.sh --grep @failover
+	@ENABLE_FAILOVER_TEST=true ./scripts/ui-test.sh --grep @failover --project=chromium --workers=1
 
 ui-screens: ## Screenshot every screen at 1440×900 and 390×844 → docs/screenshots/
-	@./scripts/ui-test.sh --grep @screens
+	@./scripts/ui-test.sh --grep @screens --project=chromium --workers=1
 
 ui-check: ## Nuxt type-check + ESLint pass
 	@cd ui && npm run typecheck && npm run lint
+
+.PHONY: doctor credential-status state-audit publish-evidence must-test
+
+doctor: ## Read-only target, Vault seal and certificate diagnostics
+	@./scripts/doctor.sh
+
+credential-status: ## Scoped credential metadata only, plus state audit
+	@./scripts/credential-status.sh
+
+state-audit: ## Reject computed or explicit credential material in current state
+	@python3 scripts/state-audit.py
+
+publish-evidence: ## Retry evidence publication for a provisioned run
+	@./scripts/publish-evidence.sh
+
+must-test: ## Offline regression tests for evidence, auth, ownership and runs
+	@./scripts/must-test.sh
+	@cd ui && node --test unit/*.test.mjs
+	@node --test collector/tests/*.test.mjs
+
+.PHONY: proof-manifest proof-live
+proof-manifest: ## Execute credential-free gates and save a sanitized receipt
+	@./scripts/release-proof.sh
+
+proof-live: ## Protected complete live ladder (no reset or restore)
+	@./scripts/release-proof.sh --live
+
+.PHONY: credential-expiry-proof certificate-proof
+credential-expiry-proof: ## Expire a scoped Agent fixture, prove repair and retire its predecessor
+	@./scripts/credential-expiry-proof.sh
+
+certificate-proof: ## Renew same-CA leaves, roll consumers and verify served certificates
+	@./scripts/certificate-proof.sh
+
+.PHONY: component-proof
+component-proof: ## Dedicated PKI issuance/revocation/expiry and Transit rotation/rewrap proof
+	@./scripts/component-proof.sh
+
+.PHONY: upgrade-snapshot
+upgrade-snapshot: ## Protected pre-upgrade snapshots of both Raft stores; never restores
+	@./scripts/upgrade-snapshot.sh
+
+.PHONY: vso-approve upgrade-proof
+vso-approve: ## Approve only the exact VSO_APPROVE_CSV on its current UID-bound plan
+	@./scripts/vso-approve.sh
+
+upgrade-proof: ## Private snapshots, collector runtime upgrade, config rollback/audit recovery, final upgrade
+	@./scripts/upgrade-proof.sh
+
+.PHONY: dependency-inventory destruction-guard-proof
+dependency-inventory: ## Record reviewed versions and deployed immutable image identities
+	@./scripts/dependency-inventory.sh
+
+destruction-guard-proof: ## Verify platform destruction is refused at plan time; never applies
+	@./scripts/destruction-guard-proof.sh
+
+.PHONY: observer-boundary
+observer-boundary: ## Prove ten actual allow/deny boundaries for the runtime observation identity
+	@./scripts/observer-boundary.sh
+
+.PHONY: observability-proof
+observability-proof: ## Prove C02 private scraping, access denial, redaction and retained restart continuity
+	@./scripts/observability-proof.sh
+
+.PHONY: consumer-proof
+consumer-proof: ## Prove isolated Agent database delivery, denied cross-app access, expiry and recovery
+	@./scripts/consumer-proof.sh

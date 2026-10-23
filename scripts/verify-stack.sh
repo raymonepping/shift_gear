@@ -14,6 +14,8 @@ require_cmd oc
 require_cmd jq
 require_cmd curl
 require_kubeconfig
+VERIFY_SCOPE="${VERIFY_SCOPE:-full}"
+case "${VERIFY_SCOPE}" in full|runtime) ;; *) die "VERIFY_SCOPE must be full or runtime" ;; esac
 
 INFRA_JSON="${BUILD_DIR}/terraform/infra.json"
 [[ -f "${INFRA_JSON}" ]] || die ".build/terraform/infra.json not found — run 'make infra'"
@@ -120,6 +122,17 @@ for vs in VaultStaticSecret/app-config VaultDynamicSecret/db-creds; do
   fi
 done
 
+# Root must land on the application sign-in page.
+ingress_ca="$(jq -r '.cluster.ingress_ca_path // empty' "${INFRA_JSON}")"
+[[ "${ingress_ca}" == /* ]] || ingress_ca="${ROOT_DIR}/${ingress_ca}"
+keycloak_root="$(curl -sS --max-time 10 --cacert "${ingress_ca}" -o /dev/null \
+  -w '%{http_code} %{redirect_url}' "https://keycloak.${APPS_DOMAIN}/" 2>/dev/null || true)"
+if [[ "${keycloak_root}" == "302 https://shiftgear.${APPS_DOMAIN}/signin" ]]; then
+  check "Keycloak: root redirects to Shift Gear sign-in" ok "302 https://shiftgear.${APPS_DOMAIN}/signin"
+else
+  check "Keycloak: root redirects to Shift Gear sign-in" fail "${keycloak_root:-unreachable}"
+fi
+
 # ── Deployments available ─────────────────────────────────────────────────────
 for d in sg-app/sg-ui sg-app/agent-demo sg-workloads/workload-a sg-workloads/workload-b \
   sg-workloads/postgres sg-identity/openldap sg-identity/keycloak; do
@@ -139,26 +152,44 @@ done
 demo_pod="$(oc -n sg-app get pod -l app.kubernetes.io/name=agent-demo \
   --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
 if [[ -z "${demo_pod}" ]]; then
-  check "Agent demo: demo-secret rendered" fail "no running agent-demo pod"
-elif oc -n sg-app exec "${demo_pod}" -c app -- test -s /vault/secrets/demo-secret 2>/dev/null; then
-  check "Agent demo: demo-secret rendered" ok "${demo_pod}"
+  check "Agent demo: secret rendered, token isolated" fail "no running agent-demo pod"
+elif oc -n sg-app exec "${demo_pod}" -c app -- /bin/sh -ec \
+  'test -s /vault/secrets/demo-secret; test ! -e /vault/secrets/.token; test ! -e /vault/token/.token' 2>/dev/null; then
+  check "Agent demo: secret rendered, token isolated" ok "${demo_pod}"
 else
-  check "Agent demo: demo-secret rendered" fail "/vault/secrets/demo-secret empty or absent"
+  check "Agent demo: secret rendered, token isolated" fail "secret absent or Agent token exposed to app"
 fi
 
 # ── Gate files ────────────────────────────────────────────────────────────────
-for gate in idempotency drift secret-scan validation; do
-  gate_file="${BUILD_DIR}/gates/${gate}.json"
-  if [[ ! -f "${gate_file}" ]]; then
-    check "Gate: ${gate}" fail "${gate_file#"${ROOT_DIR}"/} not found — run 'make lab'"
-    continue
+if [[ "${VERIFY_SCOPE}" == runtime ]]; then
+  printf '  Convergence gates not evaluated (runtime scope).\n'
+else
+  cluster_id="$(oc --request-timeout=5s get namespace kube-system -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+  run_file="${BUILD_DIR}/run.json"
+  run_id="$(jq -r '.runId // empty' "${run_file}" 2>/dev/null || true)"
+  digest="$("${SCRIPT_DIR}/automation-digest.sh")"
+  if [[ -n "${cluster_id}" && -n "${run_id}" ]] && jq -e \
+    --arg cluster "${cluster_id}" --arg digest "${digest}" \
+    '.clusterId == $cluster and .inputDigest == $digest and .provisioning == "success"' \
+    "${run_file}" >/dev/null 2>&1; then
+    check "Convergence: current cluster and source inputs" ok "${run_id}"
+  else
+    check "Convergence: current cluster and source inputs" fail "missing, failed or stale run — run make lab"
   fi
-  # validation.json carries counts; the other gates carry a result.
-  result="$(jq -r 'if has("fail_count") then (if .fail_count == 0 and (.pass_count // 0) > 0 then "pass" else "fail" end)
-                   else (.result // "unknown") end' "${gate_file}" 2>/dev/null || echo unknown)"
-  if [[ "${result}" == "pass" ]]; then check "Gate: ${gate}" ok "pass"
-  else check "Gate: ${gate}" fail "${result}"; fi
-done
+  for gate in idempotency drift secret-scan validation; do
+    gate_file="${BUILD_DIR}/gates/${gate}.json"
+    if [[ -z "${run_id}" || -z "${cluster_id}" ]] || ! jq -e \
+      --arg run "${run_id}" --arg cluster "${cluster_id}" \
+      '.run_id == $run and .cluster_id == $cluster' "${gate_file}" >/dev/null 2>&1; then
+      check "Gate: ${gate}" fail "missing or belongs to another run/cluster — run make lab"
+      continue
+    fi
+    result="$(jq -r 'if has("fail_count") then (if .fail_count == 0 and (.pass_count // 0) > 0 then "pass" else "fail" end)
+                     else (.result // "unknown") end' "${gate_file}" 2>/dev/null || echo unknown)"
+    if [[ "${result}" == pass ]]; then check "Gate: ${gate}" ok "pass"
+    else check "Gate: ${gate}" fail "${result}"; fi
+  done
+fi
 
 # ── Workloads hold no Vault configuration ─────────────────────────────────────
 # The VSO promise: workload pods read files and know nothing about Vault. The

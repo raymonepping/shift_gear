@@ -5,7 +5,7 @@
 # runs as root; Bitnami's free images are frozen (bitnamilegacy). This image
 # runs slapd as whatever UID OpenShift assigns, on port 1389, with group 0
 # owning every writable path (the OpenShift arbitrary-UID convention).
-FROM docker.io/library/alpine:3.22
+FROM docker.io/library/alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
 
 RUN apk add --no-cache openldap openldap-back-mdb openldap-clients && \
     mkdir -p /var/lib/openldap/data /var/lib/openldap/run /etc/sg-ldap && \

@@ -13,6 +13,7 @@ const devHint = computed(() =>
 </script>
 
 <template>
+  <p v-if="$route.query.reason === 'expired'" class="inline-notice" role="status">Your session expired or was signed out. Sign in again to continue.</p>
   <div class="sg-signin">
     <section class="vg-hero sg-signin__hero">
       <div class="sg-signin__gear" aria-hidden="true">

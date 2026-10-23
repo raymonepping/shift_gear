@@ -1,0 +1,35 @@
+name: Protected live proof
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: shift-gear-live-target
+  cancel-in-progress: false
+jobs:
+  live:
+    environment: shift-gear-lab
+    runs-on: [self-hosted, shift-gear-lab]
+    timeout-minutes: 180
+    steps:
+      # Dedicated runner retains its protected working directory and custody.
+      # The operator must update/review that checkout before dispatch.
+      - name: Verify requested revision and target
+        working-directory: ${{ vars.SHIFT_GEAR_WORKDIR }}
+        env:
+          REQUESTED_REVISION: ${{ github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$REQUESTED_REVISION"
+          test -z "$(git status --porcelain)"
+          make doctor
+      - name: Serialized non-destructive release ladder
+        working-directory: ${{ vars.SHIFT_GEAR_WORKDIR }}
+        run: |
+          make proof-live
+      - name: Retain sanitized release receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: shift-gear-live-proof
+          path: ${{ vars.SHIFT_GEAR_WORKDIR }}/.build/proof-manifest.json
+          if-no-files-found: error
+          retention-days: 14

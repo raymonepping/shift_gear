@@ -1,34 +1,23 @@
 # Scenario 08 — Drift detection
 
-**Purpose**: Prove each tool detects its own layer of drift — Terraform for infrastructure and Vault structure, Ansible for configuration.
+Prove detection with four reversible mutations. Each mutation is asserted
+before checking, each detector must report the specific change, and each
+restoration is checked. No secret engine or database data is deleted.
 
-## 3-line presenter script
-
-```bash
-# Vault mount drift (Terraform detects)
-vault namespace login -namespace=shift-gear && vault secrets disable -namespace=shift-gear transit
-make platform  # tf plan rc=2 → detects missing transit mount → apply restores it
-
-# LDAP group drift (Ansible identity-verify detects)
-# Add ben to engineers in the LDAP admin UI, then:
-make identity-verify  # fails for ben → make identity restores membership
-```
-
-## Four sub-scenarios
-
-| # | Drift introduced | Tool that detects | Fix command |
-|---|---|---|---|
-| 1 | Disable the `transit` Vault mount | `terraform/platform plan` (exit 2) | `make platform` |
-| 2 | Edit workload-a image directly | `terraform/workloads plan` (or `ignore_changes` proves intent) | `make workloads` |
-| 3 | Change a Keycloak client in the admin UI | `ansible identity --check` (changed > 0) | `make identity` |
-| 4 | Add ben to the `engineers` LDAP group | `make identity-verify` fails for ben | `make identity` |
-
-## How to run
-
-```bash
+```sh
 bash scenarios/08_drift_detection/run.sh
+make drift
 ```
 
-## Why this works
+| Mutation | Detection | Restoration |
+|---|---|---|
+| Transit mount description | Platform plan exits 2 and names the mount and marker | Platform apply, then read-back |
+| Extra workload-a Deployment label | Workloads plan exits 2 and names the label | Workloads apply, then read-back |
+| sg-cli client name | Identity check mode reports changes and leaves marker intact | Real identity run, then read-back |
+| Ben added to engineers | Fresh LDAP login gains `sg-engineer`; `staff` deliberately carries no policy | Remove membership; fresh login has no identity policy |
 
-Terraform's `plan -detailed-exitcode` reports exit 2 when it would make changes — it acts as a structural diff tool.  Ansible `--check` mode re-reads the actual state and reports what it *would* change — it acts as a configuration diff tool.  `make identity-verify` is a pure read-only proof: it logs in with real credentials and compares actual identity_policies against expected ones, so a manual LDAP change is immediately visible.
+The run requires clean platform and workloads plans first. It finishes with
+clean plans and the full identity verifier. A cleanup handler reverses a
+mutation if its proof fails. Credentials stay in memory or stdin; captured
+command output goes to ignored `.cache/scenario-08-*.log` files. Inspect those
+logs if a check fails, then confirm `make verify` and `make drift`.

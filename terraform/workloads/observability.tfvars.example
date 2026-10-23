@@ -1,0 +1,5 @@
+# Optional. Copy to observability.auto.tfvars to opt in locally. Defaults need no backend/storage.
+metrics_backend               = "opentelemetry" # preferred; alternatives: "prometheus", "none"
+audit_archive_enabled         = true
+observability_storage_enabled = true
+# To disable runtime after use, set backend="none" and archive=false; keep storage=true to retain protected data.

@@ -34,3 +34,6 @@
 
 - name: Configure agent demo KV seed — shift-gear/agent/demo-secret
   ansible.builtin.include_tasks: agent_demo.yml
+
+- name: Configure isolated Agent database consumer
+  ansible.builtin.include_tasks: agent_db.yml

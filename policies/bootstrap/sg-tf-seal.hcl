@@ -93,3 +93,7 @@ path "sys/policies/acl/sg-tf-*" {
 path "sys/policies/acl/sg-ansible-*" {
   capabilities = ["deny"]
 }
+
+# Explicit maintenance identity structure; never snapshot contents or restore.
+path "sys/policies/acl/sg-snapshot-reader" { capabilities = ["create", "read", "update", "delete"] }
+path "auth/token/roles/sg-snapshot-reader" { capabilities = ["create", "read", "update", "delete"] }

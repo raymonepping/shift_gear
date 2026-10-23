@@ -1,0 +1,116 @@
+[
+  {
+    "token": "tf-seal",
+    "vault": "vault-seal",
+    "path": "sys/mounts/transit",
+    "expect": "allow:create"
+  },
+  {
+    "token": "tf-seal",
+    "vault": "vault-seal",
+    "path": "transit/keys/autounseal",
+    "expect": "allow:create"
+  },
+  {
+    "token": "tf-seal",
+    "vault": "vault-seal",
+    "path": "auth/approle/role/sg-seal-autounseal",
+    "expect": "allow:create"
+  },
+  {
+    "token": "tf-seal",
+    "vault": "vault-seal",
+    "path": "auth/approle/role/sg-seal-autounseal/secret-id",
+    "expect": "deny:update"
+  },
+  {
+    "token": "tf-seal",
+    "vault": "vault-seal",
+    "path": "sys/policies/acl/sg-tf-seal",
+    "expect": "deny:update"
+  },
+  {
+    "token": "ansible-seal",
+    "vault": "vault-seal",
+    "path": "auth/approle/role/sg-seal-autounseal/secret-id",
+    "expect": "allow:update"
+  },
+  {
+    "token": "ansible-seal",
+    "vault": "vault-seal",
+    "path": "auth/approle/role/sg-seal-autounseal/role-id",
+    "expect": "allow:read"
+  },
+  {
+    "token": "ansible-seal",
+    "vault": "vault-seal",
+    "path": "sys/mounts/transit",
+    "expect": "deny:create"
+  },
+  {
+    "token": "ansible-seal",
+    "vault": "vault-seal",
+    "path": "sys/policies/acl/autounseal",
+    "expect": "deny:update"
+  },
+  {
+    "token": "tf-platform",
+    "vault": "vault",
+    "path": "shift-gear/sys/mounts/transit",
+    "expect": "allow:create"
+  },
+  {
+    "token": "tf-platform",
+    "vault": "vault",
+    "path": "shift-gear/sys/policies/acl/sg-engineer",
+    "expect": "allow:update"
+  },
+  {
+    "token": "tf-platform",
+    "vault": "vault",
+    "path": "shift-gear/sys/auth/kubernetes",
+    "expect": "deny:create"
+  },
+  {
+    "token": "tf-platform",
+    "vault": "vault",
+    "path": "shift-gear/kv/data/shift-gear/config/app-config",
+    "expect": "deny:read"
+  },
+  {
+    "token": "tf-platform",
+    "vault": "vault",
+    "path": "shift-gear/sys/mounts/kv",
+    "expect": "deny:delete"
+  },
+  {
+    "token": "ansible-platform",
+    "vault": "vault",
+    "path": "shift-gear/sys/auth/kubernetes",
+    "expect": "allow:create"
+  },
+  {
+    "token": "ansible-platform",
+    "vault": "vault",
+    "path": "shift-gear/kv/data/shift-gear/config/app-config",
+    "expect": "allow:create"
+  },
+  {
+    "token": "ansible-platform",
+    "vault": "vault",
+    "path": "shift-gear/sys/mounts/transit",
+    "expect": "deny:create"
+  },
+  {
+    "token": "ansible-platform",
+    "vault": "vault",
+    "path": "shift-gear/sys/policies/acl/sg-engineer",
+    "expect": "deny:update"
+  },
+  {
+    "token": "ansible-platform",
+    "vault": "vault",
+    "path": "shift-gear/sys/policies/acl/sg-ansible-platform",
+    "expect": "deny:update"
+  }
+]

@@ -1,0 +1,3 @@
+{
+  "ux": ["sg_ux : Sync the evidence ConfigMap (the console mounts it read-only)"]
+}

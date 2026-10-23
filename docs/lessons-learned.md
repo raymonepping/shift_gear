@@ -83,7 +83,8 @@ The default Keycloak LDAP mapper for `firstName` uses `cn`. For standard LDAP en
 Vault `bound_claims` on `given_name` in JWT auth.
 
 **L16 — ConfigMap evidence path for the UI API pod.**
-A stateless API pod on CRC cannot mount a host path or a `ReadWriteMany` PVC. Ansible syncs
+The Mac’s generated evidence is published to a ConfigMap rather than
+requiring a shared storage volume. Ansible syncs
 `.build/*.json` into a ConfigMap; the pod mounts it as a volume. `make ux` is idempotent:
 it only updates changed keys.
 
@@ -95,20 +96,19 @@ applies chrony config after every `crc start`.
 
 **L18 — Stale builder token after a long stop.**
 The BuildConfig for OpenLDAP uses the builder SA token. After a long `crc stop`, the SA token
-expires. `make ux` triggers a new build, which generates a fresh token. If the build fails
-with `401 Unauthorized`, delete the old builder pod and re-run `make ux`.
+expires. The identity phase owns the OpenLDAP build. If it fails with `401 Unauthorized`, inspect the builder pod and rerun `make identity`; `make ux` builds the console only.
 
 **L19 — DB lease lapsed during Mac sleep.**
-PostgreSQL dynamic credentials have a 1-hour TTL. After a Mac sleep longer than 1 hour, the
+The demo-reader role defaults to a 5-minute TTL and caps renewal at 10 minutes. After a sufficiently long Mac sleep, the
 VSO `VaultDynamicSecret` lease has lapsed. VSO requests a new credential automatically on
 the next sync cycle. If the `db-creds` Secret is stale, `oc -n sg-workloads delete secret db-creds`
 forces an immediate refresh.
 
-**L20 — AppRole lockout: `secret_id_num_uses=1` on the rotator.**
-The rotator CronJob generates a secret-id with `num_uses=1`. If the job runs twice in quick
-succession (e.g., after a failed run and a retry), the second job cannot authenticate because
-the secret-id was consumed. The fix: the rotator always generates a new secret-id at the
-start, not the end, of its run.
+**L20 — AppRole credentials have separate lifetimes.**
+The agent ID permits repeated logins and expires in 24 hours; its token starts
+at 1 hour with a 24-hour cap. The separate rotator ID is non-expiring and its
+Job token lasts 10 minutes. The CronJob replaces the agent ID every six hours.
+Do not describe either current role as single-use.
 
 **L21 — Substrate isolation grep must exempt `crc-*.sh` delegation lines.**
 `scripts/down.sh` calls `scripts/crc-down.sh` and `scripts/crc-up.sh` by name. The grep for

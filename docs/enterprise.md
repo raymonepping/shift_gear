@@ -53,7 +53,7 @@ Shift Gear to an enterprise audience or when planning a production deployment.
 |---|---|---|
 | Seal Vault (dedicated single-node Vault, Shamir 1/1) | Vault cluster dedicated to sealing (HA, Raft), auto-unsealed by AWS KMS or Azure Key Vault | The transit seal stanza in `vault/values.yaml` is unchanged; only the seal Vault's own unseal method changes |
 | Seal agent (AppRole + mTLS, rotator CronJob) | Same pattern — or replace with Vault Agent auto-auth + Kubernetes auth on the seal Vault | CIDR restriction still applies; NetworkPolicy still applies |
-| Manual unseal key storage (`.secrets/`) | Vault's own auto-unseal via HSM or KMS | No human ever holds the unseal key in production |
+| Manual unseal key storage (`.secrets/`) | Vault's own auto-unseal via HSM or KMS | Operator custody and recovery-key quorum depend on the production seal configuration |
 
 ---
 
@@ -61,8 +61,8 @@ Shift Gear to an enterprise audience or when planning a production deployment.
 
 | Lab mechanism | Enterprise counterpart | Notes |
 |---|---|---|
-| File audit device on a PVC | File audit device on persistent storage, forwarded to a SIEM (Splunk, QRadar) via a log shipper | Vault audit log format is HMAC-redacted JSON; same in production |
-| Socket audit device | Socket audit to a sidecar that forwards to the SIEM | The `127.0.0.1:9090` socket in the lab becomes a pod-local sidecar in production |
+| File audit device writing to stdout | Durable audit storage or an OpenShift log pipeline forwarding to a SIEM | Vault audit log format is HMAC-redacted JSON; same in production |
+| Socket device + in-memory sg-audit collector | Socket or file ingest into a durable SIEM pipeline | Lab ingest is `sg-audit.sg-app.svc:9090`; its 1,000-entry buffer is a console view, not durable audit storage |
 | `make verify` gate files (`.build/gates/`) | Audit trail in HCP Terraform plan history + AAP job history | Every apply and check-mode run is recorded with full output |
 
 ---

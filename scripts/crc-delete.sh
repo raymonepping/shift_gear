@@ -9,7 +9,14 @@ source "${SCRIPT_DIR}/common.sh"
 
 require_cmd crc
 
-STATUS=$(crc status --output json 2>/dev/null | jq -r '.crcStatus' 2>/dev/null || echo "Missing")
+pid_file="${HOME}/.crc/machines/crc/vfkit.pid"
+if [[ -s "${pid_file}" ]] && kill -0 "$(cat "${pid_file}")" 2>/dev/null; then
+  STATUS="Running"
+elif [[ -d "${HOME}/.crc/machines/crc" ]]; then
+  STATUS="Stopped"
+else
+  STATUS="Missing"
+fi
 
 if [[ "${STATUS}" == "Missing" || "${STATUS}" == "No CRC instance"* ]]; then
   info "No CRC instance found; nothing to delete."
@@ -21,10 +28,10 @@ info "CRC VM found (status: ${STATUS}) — deleting..."
 # Stop first if running
 if [[ "${STATUS}" == "Running" ]]; then
   info "Stopping CRC VM..."
-  crc stop 2>/dev/null || true
+  "${SCRIPT_DIR}/crc-control.sh" stop
 fi
 
 info "Deleting CRC VM..."
-crc delete --force
+"${SCRIPT_DIR}/crc-control.sh" delete --force
 ok "CRC VM deleted. Run 'make crc-up' to create a fresh instance."
 info "Cache preserved at ~/.crc/cache ($(du -sh ~/.crc/cache 2>/dev/null | cut -f1 || echo '?'))."

@@ -51,7 +51,7 @@ for root in "${TF_DIR}"/*/; do
   [[ "${name}" =~ ^(vault-seal|vault|vault-config|tests)$ ]] && continue
   [[ -d "${root}" ]] || continue
   if [[ ! -d "${root}.terraform" ]]; then
-    terraform -chdir="${root}" init -input=false -backend=false -no-color >/dev/null 2>&1 || true
+    terraform -chdir="${root}" init -input=false -backend=false -lockfile=readonly -no-color >/dev/null 2>&1 || true
   fi
   if terraform -chdir="${root}" validate -no-color >/dev/null 2>&1; then
     pass "terraform validate: ${name}"

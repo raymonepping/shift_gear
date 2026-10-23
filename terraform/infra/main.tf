@@ -69,3 +69,14 @@ resource "local_file" "ingress_ca" {
   content         = data.kubernetes_config_map_v1.ingress_ca.data["ca-bundle.crt"]
   file_permission = "0644"
 }
+
+# Dependency metadata beside the unchanged six-field connection contract.
+# Resolve the cluster-maintained CLI tag once as an immutable desired image.
+data "kubernetes_resource" "cli_image" {
+  api_version = "image.openshift.io/v1"
+  kind        = "ImageStreamTag"
+  metadata {
+    name      = "cli:latest"
+    namespace = "openshift"
+  }
+}

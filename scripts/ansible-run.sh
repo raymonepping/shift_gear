@@ -8,6 +8,7 @@ set -euo pipefail
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=ansible-env.sh
 source "${SCRIPT_DIR}/ansible-env.sh"
+sg_lock "$@"
 
 require_cmd ansible-playbook
 

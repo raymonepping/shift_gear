@@ -18,9 +18,10 @@ oc -n sg-workloads get vaultstaticsecret app-config -o jsonpath='{.status.condit
 bash scenarios/09_vso_overwrites_hand_edit/run.sh      # TIMEOUT=90 by default
 ```
 
-## Expected output
+## Recorded result
 
-Recorded from the first real run (roadmap 03_01).
+On 2026-10-09 VSO restored the original data hash after 6 seconds. The script
+then exited successfully and `make verify` passed.
 
 ## Safety
 

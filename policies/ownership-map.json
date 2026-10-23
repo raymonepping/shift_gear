@@ -1,0 +1,125 @@
+{
+  "schemaVersion": "1",
+  "rows": [
+    {
+      "id": "structure",
+      "area": "Cluster resources and Vault structure",
+      "owner": "Terraform",
+      "scope": "Namespaces, RBAC, deployments, Helm, Routes, mounts and policy structure",
+      "runtimeWriter": "Controllers populate public status and metadata",
+      "exception": "No general spec exemption; protected mounts and keys use prevent_destroy",
+      "check": "Empty plans and scenario 08 mutation tests",
+      "runbook": "evidence"
+    },
+    {
+      "id": "configuration",
+      "area": "Vault and identity configuration",
+      "owner": "Ansible",
+      "scope": "Initialization, scoped credentials, auth configuration, seed values and LDAP federation",
+      "runtimeWriter": "Scoped bootstrap and maintenance identities",
+      "exception": "Init-root custody remains an explicit bootstrap exception",
+      "check": "Repeat-run stats, auth probes and scenario 08 membership tests",
+      "runbook": "identity"
+    },
+    {
+      "id": "reviewer",
+      "area": "Kubernetes authentication reviewer",
+      "owner": "Terraform",
+      "scope": "ServiceAccount and RBAC structure; Vault uses a projected token",
+      "runtimeWriter": "Kubernetes rotates the projected pod token",
+      "exception": "No credential resource in Terraform",
+      "check": "Fresh Kubernetes login and current-state credential audit",
+      "runbook": "delivery"
+    },
+    {
+      "id": "seal-marker",
+      "area": "Seal Agent credential marker",
+      "owner": "Ansible",
+      "scope": "Seal Agent pod-template annotation",
+      "runtimeWriter": "Ansible credential repair",
+      "exception": "Only shift-gear/credentials-rotated is delegated",
+      "check": "Expiry/repair proof and empty workloads plan",
+      "runbook": "vault"
+    },
+    {
+      "id": "delivery",
+      "area": "Application secret delivery",
+      "owner": "VSO",
+      "scope": "app-config and db-creds destination Secrets and consumer restart targets",
+      "runtimeWriter": "Vault Secrets Operator",
+      "exception": "Only vso.secrets.hashicorp.com/restartedAt is delegated on workload templates",
+      "check": "Rotation/revocation scenarios and empty workloads plan",
+      "runbook": "delivery"
+    },
+    {
+      "id": "publication",
+      "area": "Published console evidence",
+      "owner": "Ansible",
+      "scope": "sg-app/sg-evidence ConfigMap",
+      "runtimeWriter": "Ansible UX publication",
+      "exception": "One exact named changed-task exception in scripts/idempotency-tasks.json",
+      "check": "Changed-task callback and served observation identity",
+      "runbook": "evidence"
+    },
+    {
+      "id": "rotation",
+      "area": "Console application KV rotation",
+      "owner": "Operator",
+      "scope": "CAS-protected application configuration write under the signed-in Vault policy",
+      "runtimeWriter": "Authorized signed-in operator",
+      "exception": "Does not own policy or mount structure; delivery remains unverified without correlation",
+      "check": "Direct HTTP denies, conflict and receipt/retry tests",
+      "runbook": "delivery"
+    },
+    {
+      "id": "images",
+      "area": "Console and LDAP image identity",
+      "owner": "Terraform + Ansible",
+      "scope": "Ansible builds and records immutable image inputs; Terraform consumes those inputs",
+      "runtimeWriter": "Ansible reconciles the named container image with preconditions",
+      "exception": "No image-field ignore exception",
+      "check": "Digest catalog validation, live builds and empty workload plans",
+      "runbook": "evidence"
+    },
+    {
+      "id": "observer",
+      "area": "Runtime observation and registry references",
+      "owner": "Terraform",
+      "scope": "sg-ui-observer identity, named GET-only Roles and bindings",
+      "runtimeWriter": "OpenShift populates registry pull-secret references",
+      "exception": "Only image_pull_secret, secret references and openshift.io/internal-registry-pull-secret-ref are exempted; no Secret-read permission",
+      "check": "Twenty actual observer RBAC allow/deny checks",
+      "runbook": "delivery"
+    },
+    {
+      "id": "fixtures",
+      "area": "Component fixtures and snapshot readers",
+      "owner": "Terraform + Ansible",
+      "scope": "Terraform declares dedicated fixtures/roles; scoped Ansible identities request temporary proof/download credentials",
+      "runtimeWriter": "Short-lived maintenance identities",
+      "exception": "Snapshot download is privileged maintenance; isolated restore remains deferred",
+      "check": "PKI/Transit lifecycle, capability boundaries and private snapshot inspection",
+      "runbook": "components"
+    },
+    {
+      "id": "observability",
+      "area": "Metrics and audit retention",
+      "owner": "Terraform",
+      "scope": "Optional OpenTelemetry/Prometheus workloads, opt-in protected storage, network access and retention limits",
+      "runtimeWriter": "Enabled collector archive commits/prunes projected metadata; selected metrics integration samples numeric series",
+      "exception": "Queued data and counters are volatile; PVC persistence is not external backup or isolated restore",
+      "check": "Redaction, actual access boundaries, retention/restart and scrape proofs",
+      "runbook": "observability"
+    },
+    {
+      "id": "agent-database",
+      "area": "Isolated Agent database consumer",
+      "owner": "Terraform + Ansible",
+      "scope": "Terraform owns pod identity, memory volumes and narrow network access; Ansible owns Vault auth, dedicated database connection and role",
+      "runtimeWriter": "Vault Agent renders and replaces short-lived credentials; Vault retires database principals",
+      "exception": "No Kubernetes Secret or Vault token is delivered to the application; existing VSO paths remain separate",
+      "check": "Actual SQL allow/deny, cross-consumer denial, expiry and restart recovery",
+      "runbook": "consumer"
+    }
+  ]
+}

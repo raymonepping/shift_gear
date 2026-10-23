@@ -12,6 +12,7 @@ set -euo pipefail
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "${SCRIPT_DIR}/common.sh"
+sg_lock "$@"
 require_cmd jq
 require_cmd oc
 require_cmd curl
@@ -63,8 +64,13 @@ check() { if [[ "$2" == "$3" ]]; then ok "$1"; else printf '\033[31m FAIL\033[0m
 if [[ "${before}" != "${after}" ]]; then ok "the agent holds a new secret-id"; else
   printf '\033[31m FAIL\033[0m the agent secret-id did not change\n' >&2; fails=$((fails + 1)); fi
 old_status="$(lookup_status "${before}")"
-if [[ "${old_status}" != "200" ]]; then ok "the previous secret-id is gone (lookup ${old_status})"; else
-  printf '\033[31m FAIL\033[0m the previous secret-id still exists\n' >&2; fails=$((fails + 1)); fi
+case "${old_status}" in
+  204|404) ok "the previous secret-id is gone (lookup ${old_status})" ;;
+  *)
+    printf '\033[31m FAIL\033[0m previous secret-id lookup returned unexpected HTTP %s (expected 204 or 404)\n' "${old_status}" >&2
+    fails=$((fails + 1))
+    ;;
+esac
 check "the current secret-id exists (lookup 200)" "$(lookup_status "${after}")" 200
 count="$(curl -s --cacert "${ca}" -H "X-Vault-Token: $(<"${token_file}")" -X LIST \
   "${seal_addr}/v1/auth/approle/role/${role}/secret-id" | jq '.data.keys | length')"

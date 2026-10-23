@@ -7,8 +7,12 @@ source "${SCRIPT_DIR}/common.sh"
 
 if command -v crc >/dev/null 2>&1; then
   info "Stopping CRC VM"
-  crc stop || true
+  "${SCRIPT_DIR}/crc-control.sh" stop
+  pid_file="${HOME}/.crc/machines/crc/vfkit.pid"
+  if [[ -s "${pid_file}" ]] && kill -0 "$(cat "${pid_file}")" 2>/dev/null; then
+    die "CRC stop returned but the VM process remains running"
+  fi
   ok "CRC stopped"
 else
-  warn "crc not found — skipping crc stop"
+  die "crc not found — VM shutdown was not performed"
 fi

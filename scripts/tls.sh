@@ -60,6 +60,9 @@ ensure_ca() {
     ok "CA valid until $(openssl x509 -enddate -noout -in "${PUB}/ca.pem" | cut -d= -f2)"
     return
   fi
+  if [[ -e "${KEYS}/ca.key" || -e "${PUB}/ca.pem" ]]; then
+    die "Existing CA is missing, expired or requires rollover. Refusing an implicit trust replacement; follow docs/credential-operations.md."
+  fi
   log "Creating project CA (10 years, notBefore -1h)"
   # notBefore one hour back on the CA too (lesson 23): a CA that starts "now"
   # by the Mac's clock is not yet valid on a node whose clock lags, and every
@@ -86,7 +89,7 @@ issue() {
     for san in ${sans//,/ }; do
       grep -qF "${san/IP:/IP Address:}" <<<"${text}" || missing="${missing} ${san}"
     done
-    if [[ -z "${missing}" ]] &&
+    if [[ "${SG_TLS_RENEW_LEAVES:-0}" != "1" && -z "${missing}" ]] &&
        openssl x509 -checkend "${RENEW_WITHIN}" -noout -in "${crt}" >/dev/null 2>&1 &&
        openssl verify -CAfile "${PUB}/ca.pem" "${crt}" >/dev/null 2>&1; then
       ok "${name} cert valid until $(openssl x509 -enddate -noout -in "${crt}" | cut -d= -f2)"
@@ -104,18 +107,23 @@ keyUsage=critical,digitalSignature,keyEncipherment
 extendedKeyUsage=serverAuth,clientAuth
 subjectAltName=${sans}
 EOF
+  local pending
+  pending="$(mktemp -d "${KEYS}/.leaf-XXXXXX")"
+  chmod 700 "${pending}"
   openssl req -new -newkey rsa:3072 -nodes -sha256 \
     -subj "/O=Shift Gear/CN=${cn}" \
-    -keyout "${key}" -out "${KEYS}/${name}.csr" 2>/dev/null
+    -keyout "${pending}/key" -out "${pending}/request" 2>/dev/null
   openssl x509 -req -sha256 -days 365 \
-    -in "${KEYS}/${name}.csr" \
+    -in "${pending}/request" \
     -CA "${PUB}/ca.pem" -CAkey "${KEYS}/ca.key" -CAcreateserial -CAserial "${KEYS}/ca.srl" \
-    -extfile "${ext}" \
-    -not_before "${not_before}" \
-    -out "${crt}" 2>/dev/null
-  rm -f "${ext}" "${KEYS}/${name}.csr"
-  chmod 600 "${key}"
-  chmod 644 "${crt}"
+    -extfile "${ext}" -not_before "${not_before}" \
+    -out "${pending}/certificate" 2>/dev/null
+  openssl verify -CAfile "${PUB}/ca.pem" "${pending}/certificate" >/dev/null
+  openssl x509 -checkend 0 -noout -in "${pending}/certificate" >/dev/null
+  install -m 600 "${pending}/key" "${key}"
+  install -m 644 "${pending}/certificate" "${crt}"
+  rm -f "${ext}" "${pending}/request" "${pending}/key" "${pending}/certificate"
+  rmdir "${pending}"
   changed "${name} cert issued (365 days, notBefore -1h, serverAuth+clientAuth)"
 }
 
@@ -130,9 +138,12 @@ apply_secret() {
 
 apply_ca_configmap() {
   local ns
+  local ingress_ca="${SECRETS_DIR}/kube/ingress-ca.pem"
+  [[ -s "${ingress_ca}" ]] || die "Missing trusted ingress CA; refresh it through make crc-up."
   for ns in sg-vault-seal sg-vault sg-identity sg-workloads sg-app; do
     oc -n "${ns}" create configmap sg-ca \
       --from-file=ca.pem="${PUB}/ca.pem" \
+      --from-file=ingress-ca.pem="${ingress_ca}" \
       --dry-run=client -o yaml | apply_object "ConfigMap ${ns}/sg-ca"
   done
 }

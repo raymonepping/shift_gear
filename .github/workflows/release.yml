@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   release:
@@ -16,6 +17,15 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
           fetch-depth: 0
+      - name: Require protected live proof for this revision
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          revision=$(git rev-parse HEAD)
+          proof_run=$(gh run list --workflow live-proof.yml --commit "$revision" --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          test -n "$proof_run"
+          gh run download "$proof_run" --name shift-gear-live-proof --dir .proof
+          python3 scripts/verify-proof.py .proof/proof-manifest.json "$revision"
       - name: Create release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

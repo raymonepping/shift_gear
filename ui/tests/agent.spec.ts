@@ -20,17 +20,13 @@ test('seal-agent card is present', async ({ browser }) => {
   await context.close()
 })
 
-test('re-inject button visible to cleo (operator), hidden to ben', async ({ browser }) => {
-  const { context: cleoCtx, page: cleoPage } = await pageAs(browser, 'cleo')
-  await cleoPage.goto('/agent')
-  await cleoPage.waitForLoadState('networkidle')
-  await cleoPage.waitForTimeout(1_000)
-  // Cleo is operator — may see reinject button if an agent card is present
-  // We only verify the page renders without error for ben
-  const { context: benCtx, page: benPage } = await pageAs(browser, 'ben')
-  await benPage.goto('/agent')
-  await benPage.waitForLoadState('networkidle')
-  await expect(benPage.locator('[data-testid="reinject-btn"]')).toHaveCount(0)
-  await cleoCtx.close()
-  await benCtx.close()
+test('re-injection is visibly unsupported for an operator', async ({ browser }) => {
+  const { context, page } = await pageAs(browser, 'cleo')
+  await page.goto('/agent')
+  for (const name of ['agent-demo', 'sg-agent-db']) {
+    const card = page.locator('article').filter({ has: page.getByRole('heading', { name, exact: true }) })
+    await expect(card.getByRole('button', { name: 'Re-injection unavailable' })).toBeDisabled()
+    await expect(card.getByRole('note')).toContainText('cannot restart Agent pods')
+  }
+  await context.close()
 })

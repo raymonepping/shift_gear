@@ -1,6 +1,8 @@
 // shared/types.ts — Shift Gear UI type contracts.
 // These types flow from the server API to the browser. No secret values.
 
+import type { Observation } from './observation'
+
 export type EvidenceStatus = 'pass' | 'warn' | 'fail' | 'unknown'
 export type LayerTool = 'terraform' | 'ansible'
 export type GateName = 'idempotency' | 'drift' | 'secret-scan' | 'validation'
@@ -41,7 +43,9 @@ export interface SealNodeStatus {
 }
 
 export interface FleetResponse {
-  observedAt: string
+  automationRun?: { runId: string; provisioning: string; publication: string; startedAt: string } | null
+  observedAt: string | null
+  evidence?: Observation
   tiles: FleetTile[]
   sealChain: {
     sealVault: SealNodeStatus
@@ -97,7 +101,18 @@ export interface EngineSkipped {
   reason: string
 }
 
+export interface ComponentProof {
+  result: 'pass' | 'fail' | 'running'
+  at: string
+  inputDigest: string
+  passedChecks: number
+  scope: string
+  expiryFixtureSeconds: number
+}
+
 export interface EnginesResponse {
+  componentProof?: ComponentProof | null
+  proofMatchesInputs?: boolean
   state: EnginesState
   namespace: string | null
   checkedAt: string
@@ -127,7 +142,8 @@ export interface PodCard {
 }
 
 export interface PodsResponse {
-  observedAt: string
+  observedAt: string | null
+  evidence?: Observation
   pods: PodCard[]
 }
 
@@ -150,7 +166,8 @@ export interface RouteEntry {
 }
 
 export interface RoutesResponse {
-  observedAt: string
+  observedAt: string | null
+  evidence?: Observation
   routes: RouteEntry[]
 }
 
@@ -176,7 +193,8 @@ export interface WorkloadStatus {
 }
 
 export interface OperatorResponse {
-  observedAt: string
+  observedAt: string | null
+  evidence?: Observation
   staticSecrets: VsoSecret[]
   dynamicSecrets: VsoSecret[]
   workloads: WorkloadStatus[]
@@ -219,7 +237,8 @@ export interface AgentCard {
 }
 
 export interface AgentResponse {
-  observedAt: string
+  observedAt: string | null
+  evidence?: Observation
   agents: AgentCard[]
 }
 
@@ -243,6 +262,7 @@ export interface AuditResponse {
   /** live: read from the sg-audit collector just now. */
   state: AuditState
   collector: {
+    instanceId?: string
     listening: boolean
     connections: number
     received: number
@@ -266,7 +286,8 @@ export interface ClusterNode {
 }
 
 export interface ClusterResponse {
-  observedAt: string
+  observedAt: string | null
+  evidence?: Observation
   sealVault: {
     reachable: boolean
     sealed: boolean

@@ -60,3 +60,6 @@ path "sys/policies/acl/*" {
 path "sys/mounts/*" {
   capabilities = ["deny"]
 }
+
+# Explicit maintenance role, not general root token creation. Two-minute TTL.
+path "auth/token/create/sg-snapshot-reader" { capabilities = ["update"] }

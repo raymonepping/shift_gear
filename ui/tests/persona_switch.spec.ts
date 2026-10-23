@@ -7,7 +7,7 @@ import { BASE, signIn } from './auth'
 test('ada signs out, ben signs in — session is clean between personas', async () => {
   const browser = await chromium.launch()
   // Desktop viewport — .persona-name has display:none at ≤720px.
-  const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1280, height: 800 } })
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
   const page = await context.newPage()
 
   try {

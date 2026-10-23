@@ -6,8 +6,8 @@
 
 ```bash
 oc -n sg-vault-seal delete pod -l app.kubernetes.io/instance=vault-seal --grace-period=0
-curl -sk https://vault.<apps_domain>/v1/sys/health | jq .sealed   # still false
-make unseal && curl -sk https://vault-seal.<apps_domain>/v1/sys/health | jq .sealed  # false
+curl --cacert .secrets/tls/pub/ca.pem https://vault.<apps_domain>/v1/sys/health | jq .sealed   # still false
+make unseal && curl --cacert .secrets/tls/pub/ca.pem https://vault-seal.<apps_domain>/v1/sys/health | jq .sealed  # false
 ```
 
 ## How to run

@@ -4,8 +4,8 @@ import type { AnsibleValidateResponse, AnsibleConvergenceResponse } from '../../
 useHead({ title: 'Ansible · Shift Gear' })
 definePageMeta({ middleware: ['auth'] })
 
-const { data: validate, status: vStatus, refresh: refreshValidate } = await useFetch<AnsibleValidateResponse>('/api/v1/ansible/validate', { server: false, lazy: true })
-const { data: convergence } = await useFetch<AnsibleConvergenceResponse>('/api/v1/ansible/convergence', { server: false, lazy: true })
+const { data: validate, status: vStatus, refresh: refreshValidate, error: validateError } = await useFetch<AnsibleValidateResponse>('/api/v1/ansible/validate', { server: false, lazy: true })
+const { data: convergence, status: cStatus, refresh: refreshConvergence, error: convergenceError } = await useFetch<AnsibleConvergenceResponse>('/api/v1/ansible/convergence', { server: false, lazy: true })
 
 const checkingV = computed(() => vStatus.value === 'pending')
 let timer: ReturnType<typeof setInterval> | undefined
@@ -64,6 +64,9 @@ const convergenceState = computed(() => {
         </div>
       </div>
     </section>
+
+    <SourceState :status="vStatus" :has-data="!!validate" :code="validateError?.statusCode" label="Validation observations" @retry="refreshValidate()" />
+    <SourceState :status="cStatus" :has-data="!!convergence" :code="convergenceError?.statusCode" label="Convergence observations" @retry="refreshConvergence()" />
 
     <!-- Convergence -->
     <section class="sg-layer-panel sg-layer-panel--ansible panel" aria-labelledby="conv-title">

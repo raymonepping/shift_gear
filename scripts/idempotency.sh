@@ -6,6 +6,8 @@ set -euo pipefail
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "${SCRIPT_DIR}/common.sh"
+sg_lock "$@"
+sg_gate_context
 # shellcheck source=phases.sh
 source "${SCRIPT_DIR}/phases.sh"
 require_cmd jq
@@ -32,7 +34,7 @@ while read -r phase; do
   hosts="$(jq -r '[.hosts | to_entries[] | select(.value.changed > 0) | "\(.key)=\(.value.changed)"] | join(" ")' "${stats_file}")"
   if [[ "${changed}" == "0" ]]; then
     rows+=("${phase}|changed=0|")
-  elif allowed "${phase}"; then
+  elif python3 "${SCRIPT_DIR}/allowed-changes.py" "${stats_file}"; then
     rows+=("${phase}|changed=${changed} (allowed)|${hosts}")
   else
     rows+=("${phase}|changed=${changed}|${hosts}")
@@ -48,10 +50,11 @@ done
 
 mkdir -p "${BUILD_DIR}/gates"
 jq -n \
+  --arg run_id "${SG_RUN_ID:-standalone}" --arg cluster_id "${SG_CLUSTER_ID:-unknown}" \
   --arg result "$([[ ${fails} -eq 0 ]] && echo pass || echo fail)" \
   --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  '{gate: "idempotency", result: $result, at: $at}' \
+  '{run_id: $run_id, cluster_id: $cluster_id, gate: "idempotency", result: $result, at: $at}' \
   >"${BUILD_DIR}/gates/idempotency.json"
 
 [[ ${fails} -eq 0 ]] || die "${fails} phase(s) are not idempotent."
-info "Idempotency: every Ansible phase changed=0"
+info "Idempotency: no unexpected changes; only exact named publication tasks may change"

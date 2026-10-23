@@ -13,6 +13,7 @@ set -euo pipefail
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "${SCRIPT_DIR}/common.sh"
+sg_lock "$@"
 # shellcheck source=ansible-env.sh
 source "${SCRIPT_DIR}/ansible-env.sh"
 
@@ -25,6 +26,23 @@ shift 2
 
 dir="${TF_DIR}/${root}"
 [[ -d "${dir}" ]] || die "Unknown Terraform root: ${root} (expected: infra, foundation, workloads, seal, platform)"
+
+# Non-secret build outputs are explicit desired image inputs, never lifecycle exemptions.
+image_catalog="${SECRETS_DIR}/deployment-images.tfvars.json"
+if [[ "${root}" == workloads && -f "${image_catalog}" && "${action}" =~ ^(plan|apply|drift)$ ]]; then
+  python3 - "${ROOT_DIR}/scripts/pin-built-image.py" "${image_catalog}" <<'CATALOG'
+import importlib.util
+import json
+import sys
+spec = importlib.util.spec_from_file_location('pin', sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+if not mod.valid_catalog(json.load(open(sys.argv[2]))):
+    raise SystemExit('Invalid built-image catalog refused')
+CATALOG
+  set -- "-var-file=${image_catalog}" "$@"
+fi
+
 
 # Lesson 16: always unset VAULT_NAMESPACE before any Terraform run.
 unset VAULT_NAMESPACE
@@ -97,14 +115,14 @@ write_outputs() {
 # Idempotent and quick when nothing changed; also re-initialises a root whose
 # backend configuration changed (a stale .terraform/ is not enough).
 if [[ "${action}" != "init" ]]; then
-  terraform -chdir="${dir}" init -input=false >/dev/null ||
+  terraform -chdir="${dir}" init -input=false -lockfile=readonly >/dev/null ||
     die "terraform init failed in terraform/${root}"
 fi
 
 # ── Dispatch ────────────────────────────────────────────────────────────────
 case "${action}" in
 init)
-  terraform -chdir="${dir}" init -input=false -upgrade
+  terraform -chdir="${dir}" init -input=false -lockfile=readonly
   ;;
 plan)
   terraform -chdir="${dir}" plan -input=false "$@"

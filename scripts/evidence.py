@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import base64
 import datetime as dt
+import hashlib
 import json
 import os
 import ssl
 import subprocess
 import sys
+import uuid
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -88,6 +90,25 @@ def vault(addr: str, path: str, token_file: str | None = None, namespace: str | 
         return 0, None
 
 
+def explorer_declaration(input_digest: str) -> dict | None:
+    """Carry reviewed source declarations, not credentials or live grants."""
+    try:
+        ownership_bytes = (ROOT / 'policies/ownership-map.json').read_bytes()
+        boundary_bytes = (ROOT / 'policies/boundary-matrix.json').read_bytes()
+        ownership = json.loads(ownership_bytes)
+        boundary = json.loads(boundary_bytes)
+        if ownership.get('schemaVersion') != '1' or not isinstance(ownership.get('rows'), list) or not isinstance(boundary, list):
+            return None
+        fields = ('id', 'area', 'owner', 'scope', 'runtimeWriter', 'exception', 'check', 'runbook')
+        return {'schemaVersion': '1', 'inputDigest': input_digest,
+                'sources': {'ownership': {'path': 'policies/ownership-map.json', 'sha256': hashlib.sha256(ownership_bytes).hexdigest()},
+                            'boundary': {'path': 'policies/boundary-matrix.json', 'sha256': hashlib.sha256(boundary_bytes).hexdigest()}},
+                'ownership': [{key: row[key] for key in fields} for row in ownership['rows']],
+                'boundary': [{key: row[key] for key in ('token', 'vault', 'path', 'expect')} for row in boundary]}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
 def age(iso: str | None) -> str | None:
     if not iso:
         return None
@@ -109,7 +130,13 @@ def condition(obj: dict, ctype: str):
     return None
 
 
-def build_layers(applied_digest, current_digest) -> dict:
+def gate_matches(gate, convergence, cluster_id, run_id):
+    return bool(run_id and cluster_id and gate.get('run_id') == run_id
+                and gate.get('cluster_id') == cluster_id and convergence.get('run_id') == run_id
+                and convergence.get('cluster_id') == cluster_id)
+
+
+def build_layers(applied_digest, current_digest, cluster_id, run_id) -> dict:
     """.build/layers.json in the shape ui/server/api/layers.get.ts parses."""
     allowed = {}
     allow_file = ROOT / "scripts" / "idempotency-allow.txt"
@@ -148,12 +175,32 @@ def build_layers(applied_digest, current_digest) -> dict:
     gates = {}
     for gate in ("idempotency", "drift", "secret-scan", "validation"):
         g = read_json(BUILD / "gates" / f"{gate}.json") or {}
+        if not gate_matches(g, conv, cluster_id, run_id):
+            g = {}
         if gate == "validation" and "result" not in g and "rows" in g:
             g = {"result": "pass" if g.get("fail_count", 1) == 0 else "fail", "at": g.get("generated_at")}
         gates[gate] = {"result": g.get("result", "unknown"), "at": g.get("at"),
                        "durationSeconds": gate_secs.get(gate)}
     return {"generated_at": now(), "phases": phases, "gates": gates,
             "digest": {"applied": applied_digest, "current": current_digest}}
+
+
+def component_proof_summary(value):
+    if not isinstance(value, dict) or value.get("result") not in ("pass", "fail", "running"):
+        return None
+    try:
+        timestamp = dt.datetime.fromisoformat(value["at"].replace("Z", "+00:00"))
+        digest = value["inputDigest"]
+        if timestamp.tzinfo is None or timestamp > dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=5):
+            return None
+        if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            return None
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+    checks = value.get("checks", {})
+    return {"result": value["result"], "at": value["at"], "inputDigest": digest,
+            "passedChecks": sum(item is True for item in checks.values()) if isinstance(checks, dict) else 0,
+            "scope": "dedicated-fixtures", "expiryFixtureSeconds": 5}
 
 
 def main() -> int:
@@ -385,7 +432,24 @@ def main() -> int:
          "keyNames": sorted(((demo_kv or {}).get("data") or {}).get("data", {}).keys()) if code == 200 else []},
     ]
 
+    database_agent = oc("-n", "sg-workloads", "get", "deployment", "sg-agent-db") or {}
+    if database_agent:
+        database_ready = ((database_agent.get("status") or {}).get("readyReplicas") or 0) >= 1
+        agents.append({"name": "sg-agent-db", "kind": "sidecar", "status": "pass" if database_ready else "fail",
+                       "detail": "Pod readiness observed; isolated database credentials delivered in memory" if database_ready else "not ready",
+                       "tokenTtl": None, "secretIdAge": None, "lastRotation": None, "lastInjection": None, "keyNames": []})
+
+    cluster_identity = oc("get", "namespace", "kube-system") or {}
+    generation = {"schemaVersion": "1", "clusterId": cluster_identity.get("metadata", {}).get("uid"),
+                  "runId": os.environ.get("SG_RUN_ID") or (read_json(BUILD / "run.json") or {}).get("runId"), "observationId": str(uuid.uuid4())}
+    if not generation["clusterId"]:
+        print("evidence: cluster identity unavailable", file=sys.stderr)
+        return 1
     evidence = {
+        **generation,
+        "automationRun": read_json(BUILD / "run.json"),
+        "explorer": explorer_declaration(current_digest),
+        "componentProof": component_proof_summary(read_json(BUILD / "component-proof.json")),
         "observedAt": now(),
         "vault": {"nodes": nodes, "unsealed": unsealed, "total": len(nodes), "leader": leader,
                   "licenceExpiry": licence_expiry},
@@ -411,7 +475,7 @@ def main() -> int:
     tmp.write_text(json.dumps(evidence, indent=2) + "\n")
     tmp.replace(BUILD / "evidence.json")
     layers_tmp = BUILD / "layers.json.tmp"
-    layers_tmp.write_text(json.dumps(build_layers(applied_digest, current_digest), indent=2) + "\n")
+    layers_tmp.write_text(json.dumps({**build_layers(applied_digest, current_digest, generation['clusterId'], generation['runId']), **generation}, indent=2) + "\n")
     layers_tmp.replace(BUILD / "layers.json")
     print(f"evidence: {len(cards)} pods, {len(routes)} routes, {unsealed}/{len(nodes)} unsealed, VSO {csv_status}")
     return 0

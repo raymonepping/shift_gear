@@ -4,7 +4,7 @@ import type { PodsResponse, PodCard, PodIndicator } from '../../shared/types'
 useHead({ title: 'Pods · Shift Gear' })
 definePageMeta({ middleware: ['auth'] })
 
-const { data, status, refresh } = await useFetch<PodsResponse>('/api/v1/pods', { server: false, lazy: true })
+const { data, status, refresh, error } = await useFetch<PodsResponse>('/api/v1/pods', { server: false, lazy: true })
 const checking = computed(() => status.value === 'pending')
 let timer: ReturnType<typeof setInterval> | undefined
 onMounted(() => { timer = setInterval(() => refresh(), 15_000) })
@@ -53,6 +53,8 @@ function statusTone(status: string): 'state-pass' | 'state-fail' | 'state-warn' 
         {{ pods.length }} shift-gear pods · {{ reachable }} reachable · {{ reachable === pods.length ? 'all green' : `${pods.length - reachable} unreachable` }}
       </p>
     </section>
+
+    <SourceState :status="status" :has-data="!!data" :code="error?.statusCode" label="Pod observations" @retry="refresh()" />
 
     <div v-if="checking && !data" class="skeleton" aria-label="Loading"><div v-for="i in 6" :key="i" /></div>
 

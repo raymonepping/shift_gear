@@ -2,25 +2,23 @@
 # ansible/roles/sg_configure/tasks/k8s_auth.yml
 # Enable and configure Vault kubernetes auth in the shift-gear namespace.
 # Role vso-workloads: SA vso-workloads in sg-workloads, policy sg-vso, 10m TTL.
-# The vault-token-reviewer token is read from the Kubernetes Secret created
-# by terraform/foundation and passed in the body — never in a URL.
+# Vault uses its own rotating projected service-account token for TokenReview.
+# Terraform owns the vault ServiceAccount's delegator binding, never its JWT.
 
-- name: Read vault-token-reviewer token from Kubernetes
+- name: Read the public Kubernetes CA
   kubernetes.core.k8s_info:
     kubeconfig: "{{ sg_configure_kubeconfig }}"
     api_version: v1
-    kind: Secret
-    name: "{{ sg_configure_reviewer_secret }}"
+    kind: ConfigMap
+    name: kube-root-ca.crt
     namespace: "{{ sg_configure_reviewer_ns }}"
   register: sg_configure_reviewer_secret_data
   no_log: true
 
-- name: Decode the reviewer token
+- name: Set the public Kubernetes CA
   ansible.builtin.set_fact:
-    sg_configure_reviewer_token: >-
-      {{ sg_configure_reviewer_secret_data.resources[0].data.token | b64decode | trim }}
     sg_configure_reviewer_ca: >-
-      {{ sg_configure_reviewer_secret_data.resources[0].data['ca.crt'] | b64decode }}
+      {{ sg_configure_reviewer_secret_data.resources[0].data['ca.crt'] }}
   no_log: true
 
 - name: Manage Vault kubernetes auth
@@ -62,21 +60,23 @@
         sg_configure_k8s_desired:
           kubernetes_host: "{{ sg_configure_k8s_api_url }}"
           kubernetes_ca_cert: "{{ sg_configure_reviewer_ca }}"
-          disable_local_ca_jwt: true
+          disable_local_ca_jwt: false
+          token_reviewer_jwt: ""
 
     - name: Write kubernetes auth config when it differs
       ansible.builtin.uri:
         url: "{{ sg_configure_vault_addr }}/v1/auth/{{ sg_configure_k8s_auth_mount }}/config"
         method: POST
         body_format: json
-        body: >-
-          {{ sg_configure_k8s_desired
-             | combine({'token_reviewer_jwt': sg_configure_reviewer_token}) }}
+        body: "{{ sg_configure_k8s_desired }}"
         status_code: [200, 204]
       changed_when: true
       when: >-
         sg_configure_k8s_cfg.status == 404 or
-        sg_configure_k8s_cfg.json.data.kubernetes_host != sg_configure_k8s_desired.kubernetes_host
+        sg_configure_k8s_cfg.json.data.kubernetes_host != sg_configure_k8s_desired.kubernetes_host or
+        sg_configure_k8s_cfg.json.data.disable_local_ca_jwt | default(true) or
+        sg_configure_k8s_cfg.json.data.token_reviewer_jwt_set | default(true) or
+        sg_configure_k8s_cfg.json.data.kubernetes_ca_cert | default('') != sg_configure_reviewer_ca
 
     - name: Read vso-workloads role
       ansible.builtin.uri:

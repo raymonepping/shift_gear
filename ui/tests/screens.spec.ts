@@ -18,7 +18,10 @@ const SCREENS: [string, string][] = [
   ['ansible', '/ansible'],
   ['agent', '/agent'],
   ['audit', '/audit'],
+  ['observability', '/observability'],
   ['cluster', '/cluster'],
+  ['help', '/help'],
+  ['explorer', '/explorer'],
 ]
 
 for (const [w, h, suffix] of [[1440, 900, 'desktop'], [390, 844, 'mobile']] as const) {
@@ -27,7 +30,7 @@ for (const [w, h, suffix] of [[1440, 900, 'desktop'], [390, 844, 'mobile']] as c
     mkdirSync(OUT, { recursive: true })
 
     // Sign-in page (unauthenticated)
-    const anon = await browser.newContext({ viewport: { width: w, height: h }, ignoreHTTPSErrors: true })
+    const anon = await browser.newContext({ viewport: { width: w, height: h } })
     const lp = await anon.newPage()
     await lp.goto(`${BASE}/signin`)
     await lp.waitForLoadState('networkidle')
@@ -42,6 +45,10 @@ for (const [w, h, suffix] of [[1440, 900, 'desktop'], [390, 844, 'mobile']] as c
       await page.waitForTimeout(1_200)
       await page.screenshot({ path: `${OUT}/${name}-${suffix}.png`, fullPage: true })
     }
+    await page.goto('/operator')
+    await page.locator('details.runtime-sources summary').click()
+    await page.waitForLoadState('networkidle')
+    await page.screenshot({ path: `${OUT}/runtime-sources-${suffix}.png`, fullPage: true })
     await context.close()
   })
 }

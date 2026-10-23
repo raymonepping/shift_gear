@@ -1,0 +1,3 @@
+{{- with secret "database/creds/agent-reader" -}}
+postgres.sg-workloads.svc:5432:shiftgear:{{ .Data.username }}:{{ .Data.password | replaceAll "\\" "\\\\" | replaceAll ":" "\\:" }}
+{{ end -}}

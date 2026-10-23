@@ -1,0 +1,13 @@
+# PKI and Transit component proofs
+
+`make component-proof` uses dedicated fixtures managed by Terraform: Transit key `sg-component-proof`, a PKI issuance role limited to `proof.sg-workloads.svc.cluster.local`, and a nonrenewable proof identity capped at five minutes. Ansible's scoped platform token requests the identity through the declared role. No init/root token, application key rotation, policy editing, key export or UI action is involved.
+
+The proof encrypts random in-memory plaintext, decrypts it, rotates the fixture key, rewraps the original ciphertext and verifies both old and rewrapped ciphertext still decrypt. Requests against `app-data` and key-deletion configuration are denied. Old key versions intentionally remain; key deletion or raising minimum decryption version would invalidate the property under test.
+
+PKI issues a 60-second client certificate and a five-second expiry fixture. It verifies the client chain with OpenSSL, rejects a wrong common name and an unauthorized role, revokes using proof of private-key possession, and checks OpenSSL rejects the certificate against the resulting CRL. The short certificate must then expire. All issued fixtures are revoked during cleanup and the short-lived token is revoked. Public leaf/chain/CRL files are temporary; private keys and plaintext remain in memory, outside state, logs and browser responses.
+
+The dedicated issuance role stores certificates for revocation; the existing `internal-client` role and its no-store setting remain unchanged. See [Vault PKI revocation with proof of possession](https://developer.hashicorp.com/vault/api-docs/secret/pki#revoke-certificate-with-private-key) and [Transit APIs](https://developer.hashicorp.com/vault/api-docs/secret/transit). Fixture revocation/key-version history remains as an intentional record; this is not a claim that a proof has no persistent metadata effects.
+
+`make destruction-guard-proof` runs a platform **destroy plan only**, expects it to fail on `prevent_destroy` and never applies it. KV, PKI/Transit mounts and protected keys retain their guards. The private diagnostic plan log remains under `.cache/should/`; sanitized boolean receipts are under `.build/`. A failed component or cleanup probe cannot count as acceptance.
+
+The proof token is issued in the root namespace with a policy containing only the explicit `shift-gear/` fixture paths and self-revocation. This avoids Vault's elevated-permission requirement for directly creating a token in a child namespace. Root namespace does not mean root policy: the token cannot access `app-data`, change key configuration, edit policies or administer the namespace. Issuance needs no sudo or init-token fallback.

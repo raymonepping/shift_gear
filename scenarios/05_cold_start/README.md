@@ -1,6 +1,8 @@
 # Scenario 05 — Cold start
 
-**Purpose**: Prove the full stack survives `make down && make up` — the cluster auto-unseals through the seal agent and a second `make lab` reports plans empty and Ansible `changed=0`.
+**Purpose**: Prove the full stack survives `make down && make up` and the
+cluster auto-unseals through the seal agent. The roadmap runs `make lab` after
+all scenarios to prove convergence separately.
 
 ## 3-line presenter script
 

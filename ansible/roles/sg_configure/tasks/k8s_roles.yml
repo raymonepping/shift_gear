@@ -23,6 +23,13 @@
             policies: ["sg-api"]
             token_ttl: 600
             token_max_ttl: 1800
+          sg-agent-db:
+            bound_service_account_names: ["sg-agent-db"]
+            bound_service_account_namespaces: ["sg-workloads"]
+            policies: ["sg-agent-db"]
+            audience: vault
+            token_ttl: 300
+            token_max_ttl: 600
           sg-agent-demo:
             bound_service_account_names: ["sg-agent-demo"]
             bound_service_account_namespaces: ["sg-app"]
@@ -53,6 +60,9 @@
         label: "{{ item.item.key }}"
       when: >-
         item.status == 404 or
+        (item.json.data.audience | default('', true)) != (sg_configure_k8s_extra_roles[item.item.key].audience | default('', true)) or
+        (item.json.data.token_ttl | default(0) | int) != (sg_configure_k8s_extra_roles[item.item.key].token_ttl | int) or
+        (item.json.data.token_max_ttl | default(0) | int) != (sg_configure_k8s_extra_roles[item.item.key].token_max_ttl | int) or
         (item.json.data.policies | default([]) | sort)
           != (sg_configure_k8s_extra_roles[item.item.key].policies | sort) or
         (item.json.data.bound_service_account_names | default([]) | sort)

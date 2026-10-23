@@ -104,6 +104,14 @@ path "shift-gear/database/rotate-root/*" {
   capabilities = ["update"]
 }
 
+# Revoke only the demo-reader leases used by the resilience proof.
+# The ID is a path suffix; no generic revoke endpoint or prefix revoke access.
+path "shift-gear/sys/leases/revoke/database/creds/demo-reader/*" {
+  capabilities = ["update"]
+  # Vault lets a body lease_id override the path; reject that escape route.
+  denied_parameters = { "lease_id" = [] }
+}
+
 # ── Tokens only through Terraform-made roles ─────────────────────────────────
 path "shift-gear/auth/token/create/sg-*" {
   capabilities = ["update"]
@@ -171,3 +179,9 @@ path "shift-gear/sys/namespaces/*" {
 path "shift-gear/sys/policy/*" {
   capabilities = ["deny"]
 }
+
+# Explicit maintenance role, not general root token creation. Two-minute TTL.
+path "auth/token/create/sg-snapshot-reader" { capabilities = ["update"] }
+
+# Issue only the root role whose policy names dedicated child-namespace fixtures.
+path "auth/token/create/sg-component-proof" { capabilities = ["update"] }

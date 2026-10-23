@@ -11,7 +11,8 @@ export default defineEventHandler(async (event): Promise<ClusterResponse> => {
   const nodes: ClusterNode[] = ev?.vault?.nodes ?? []
   const csv = ev?.operator?.csvStatus
   return {
-    observedAt: ev?.observedAt ?? new Date().toISOString(),
+    observedAt: ev?.observedAt ?? null,
+    evidence: ev?.evidence,
     sealVault: {
       reachable: ev?.sealVault?.reachable ?? false,
       sealed: ev?.sealVault?.sealed ?? true,

@@ -11,15 +11,30 @@
 // malformed line is counted and skipped.
 //
 // Read side: HTTP on READ_PORT with GET /audit (the console's AuditResponse
-// shape, newest first, ?limit=N capped at 500) and GET /healthz.
+// shape, newest first, ?limit=N capped at 500), GET /archive and GET /healthz.
+// The separate archive commits a narrower metadata projection to bounded disk;
+// a numeric-only metrics listener uses METRICS_PORT. Queued records are volatile.
 // Counters start at zero when the process starts.
 //
 // No dependencies: Node's standard library only.
 import net from 'node:net'
 import http from 'node:http'
+import { randomUUID } from 'node:crypto'
+import { lineDecoder } from './lines.mjs'
+import { parse } from './projection.mjs'
+import { MetadataArchive } from './archive.mjs'
+import { metrics } from './metrics.mjs'
 
 const INGEST_PORT = Number(process.env.INGEST_PORT ?? 9090)
 const READ_PORT = Number(process.env.READ_PORT ?? 8080)
+const METRICS_PORT = Number(process.env.METRICS_PORT ?? 8081)
+const archive = new MetadataArchive(process.env.ARCHIVE_DIR, {
+  maxBytes: Number(process.env.ARCHIVE_MAX_BYTES ?? 64 * 1024 * 1024),
+  retentionMs: Number(process.env.ARCHIVE_RETENTION_SECONDS ?? 7 * 86400) * 1000,
+})
+await archive.init()
+const maintenance = setInterval(() => archive.maintain(), 30000)
+maintenance.unref()
 const CAPACITY = Number(process.env.CAPACITY ?? 1000)
 const MAX_LINE = 1024 * 1024 // a single audit line larger than 1 MiB is dropped
 
@@ -28,6 +43,7 @@ let head = 0 // next write position
 let size = 0
 let seq = 0
 
+const instanceId = randomUUID()
 const stats = {
   listening: false,
   connections: 0,
@@ -39,50 +55,13 @@ const stats = {
   lastEntryAt: null,
 }
 
-// Names of HMAC'd values in an audit record: strings Vault prefixed with
-// "hmac-sha256:". Only the field paths are kept, never the values.
-function hmacFields(obj, prefix = '', out = []) {
-  if (out.length >= 20 || obj === null || typeof obj !== 'object') return out
-  for (const [k, v] of Object.entries(obj)) {
-    const path = prefix ? `${prefix}.${k}` : k
-    if (typeof v === 'string' && v.startsWith('hmac-sha256:')) out.push(path)
-    else if (typeof v === 'object') hmacFields(v, path, out)
-    if (out.length >= 20) break
-  }
-  return out
-}
-
-export function parse(line) {
-  let e
-  try {
-    e = JSON.parse(line)
-  } catch {
-    return null
-  }
-  if (!e || typeof e !== 'object' || !e.request) return null
-  const req = e.request
-  return {
-    time: e.time ?? null,
-    type: e.type ?? null,
-    operation: req.operation ?? null,
-    namespace: req.namespace?.path ?? '',
-    path: req.path ?? '',
-    displayName: e.auth?.display_name ?? null,
-    policies: Array.isArray(e.auth?.policies) ? e.auth.policies : [],
-    error: e.error ? String(e.error) : null,
-    hmacFields: [
-      ...hmacFields(e.auth ?? {}, 'auth'),
-      ...hmacFields(req.data ?? {}, 'request.data'),
-      ...hmacFields(e.response?.data ?? {}, 'response.data'),
-    ].slice(0, 20),
-  }
-}
 
 function store(row) {
   if (size === CAPACITY) stats.dropped += 1
   else size += 1
   seq += 1
-  ring[head] = { id: String(seq), ...row }
+  ring[head] = { id: `${instanceId}:${seq}`, ...row }
+  archive.append(ring[head])
   head = (head + 1) % CAPACITY
   stats.stored = size
 }
@@ -97,29 +76,15 @@ function newest(limit) {
 
 const ingest = net.createServer((sock) => {
   stats.connections += 1
-  let buf = ''
   sock.setEncoding('utf8')
-  sock.on('data', (chunk) => {
-    buf += chunk
-    let nl
-    while ((nl = buf.indexOf('\n')) >= 0) {
-      const line = buf.slice(0, nl)
-      buf = buf.slice(nl + 1)
-      if (!line.trim()) continue
-      stats.received += 1
-      const row = parse(line)
-      if (!row) {
-        stats.malformed += 1
-        continue
-      }
-      stats.lastEntryAt = new Date().toISOString()
-      store(row)
-    }
-    if (buf.length > MAX_LINE) {
-      stats.malformed += 1
-      buf = ''
-    }
-  })
+  const consume = lineDecoder((line) => {
+    stats.received += 1
+    const row = parse(line)
+    if (!row) { stats.malformed += 1; return }
+    stats.lastEntryAt = new Date().toISOString()
+    store(row)
+  }, () => { stats.malformed += 1 }, MAX_LINE)
+  sock.on('data', consume)
   sock.on('close', () => {
     stats.connections -= 1
   })
@@ -129,7 +94,7 @@ ingest.listen(INGEST_PORT, () => {
   stats.listening = true
 })
 
-const reader = http.createServer((req, res) => {
+const reader = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://collector')
   if (req.method !== 'GET') {
     res.writeHead(405).end()
@@ -140,11 +105,24 @@ const reader = http.createServer((req, res) => {
     res.end(stats.listening ? 'ok\n' : 'not listening\n')
     return
   }
+  if (url.pathname === '/archive') {
+    try {
+      if (!archive.status().enabled || !archive.status().available) throw new Error('unavailable')
+      const entries = await archive.newest(200)
+      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+      res.end(JSON.stringify({ archive: archive.status(), entries }))
+    } catch {
+      res.writeHead(503, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+      res.end(JSON.stringify({ archive: archive.status(), entries: [] }))
+    }
+    return
+  }
   if (url.pathname === '/audit') {
     const raw = Number.parseInt(url.searchParams.get('limit') ?? '200', 10)
     const limit = Number.isFinite(raw) ? Math.max(0, Math.min(raw, 500)) : 200
     const body = {
       collector: {
+        instanceId,
         listening: stats.listening,
         connections: stats.connections,
         received: stats.received,
@@ -163,11 +141,19 @@ const reader = http.createServer((req, res) => {
   res.writeHead(404).end()
 })
 reader.listen(READ_PORT)
+const metricServer = http.createServer((req, res) => {
+  if (req.method !== 'GET') { res.writeHead(405, { Allow: 'GET' }).end(); return }
+  if (req.url !== '/metrics') { res.writeHead(404).end(); return }
+  res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8', 'cache-control': 'no-store' })
+  res.end(metrics(stats, archive.status()))
+})
+metricServer.listen(METRICS_PORT)
 
 for (const sig of ['SIGTERM', 'SIGINT']) {
-  process.on(sig, () => {
-    ingest.close()
-    reader.close()
-    process.exit(0)
+  process.on(sig, async () => {
+    clearInterval(maintenance)
+    ingest.close(); reader.close(); metricServer.close()
+    const deadline = setTimeout(() => process.exit(1), 5000)
+    try { await archive.close(); clearTimeout(deadline); process.exit(0) } catch { process.exit(1) }
   })
 }

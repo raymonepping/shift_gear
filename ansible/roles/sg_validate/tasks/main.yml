@@ -326,6 +326,8 @@
 - name: Build final report structure
   ansible.builtin.set_fact:
     sg_validate_report:
+      run_id: "{{ lookup('ansible.builtin.env', 'SG_RUN_ID') }}"
+      cluster_id: "{{ lookup('ansible.builtin.env', 'SG_CLUSTER_ID') }}"
       rows: "{{ sg_validate_rows }}"
       pass_count: "{{ sg_validate_rows | selectattr('result', 'equalto', 'pass') | list | length }}"
       fail_count: "{{ sg_validate_rows | selectattr('result', 'equalto', 'fail') | list | length }}"

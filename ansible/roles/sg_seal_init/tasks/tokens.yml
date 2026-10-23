@@ -111,7 +111,10 @@
   register: sg_seal_init_new_token
   changed_when: true
   no_log: true
-  when: item.skipped | default(false) or item.status == 403
+  when: >-
+    item.skipped | default(false) or item.status == 403 or
+    (item.json.data.ttl | default(0) | int) <= 0 or
+    not (item.json.data.renewable | default(false) | bool)
 
 - name: Persist new tokens (0600)
   ansible.builtin.copy:
@@ -122,6 +125,24 @@
   no_log: true
   diff: false
   when: item.json is defined
+
+- name: Retire replaced bootstrap token accessors after persisting replacements
+  ansible.builtin.uri:
+    url: "{{ bt_addr }}/v1/auth/token/revoke-accessor"
+    ca_path: "{{ bt_ca }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bt_root_token }}"
+    body_format: json
+    body:
+      accessor: "{{ item.item.json.data.accessor }}"
+    status_code: [200, 204]
+  loop: "{{ sg_seal_init_new_token.results }}"
+  changed_when: true
+  no_log: true
+  when:
+    - item.json is defined
+    - item.item.json.data.accessor | default('') | length > 0
 
 - name: Renew every token (maintenance, not a configuration change)
   ansible.builtin.uri:

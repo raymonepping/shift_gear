@@ -153,6 +153,7 @@
             # friendly given_name and the OIDC user claim: the latter is the
             # safe display fallback when a profile has no given name.
             claim_mappings:
+              sub: oidc_subject
               given_name: display_name
               preferred_username: username
           # Lab only: sg-cli id_tokens for identity-verify gate tests.

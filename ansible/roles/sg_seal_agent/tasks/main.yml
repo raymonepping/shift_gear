@@ -85,7 +85,7 @@
     body_format: json
     body:
       secret_id: "{{ sg_seal_agent_existing_secret_id }}"
-    status_code: [200, 404]
+    status_code: [200, 204, 404]
   register: sg_seal_agent_secret_id_check
   check_mode: false
   no_log: true
@@ -101,7 +101,7 @@
     body_format: json
     body:
       secret_id: "{{ sg_seal_agent_rotator_existing_secret_id }}"
-    status_code: [200, 404]
+    status_code: [200, 204, 404]
   register: sg_seal_agent_rotator_secret_id_check
   check_mode: false
   no_log: true
@@ -111,10 +111,16 @@
   ansible.builtin.set_fact:
     sg_seal_agent_needs_new_secret_id: >-
       {{ sg_seal_agent_existing_secret_id | length == 0 or
-         (sg_seal_agent_secret_id_check is defined and sg_seal_agent_secret_id_check.status == 404) }}
+         (sg_seal_agent_secret_id_check.status | default(404) in [204, 404]) or
+         ((sg_seal_agent_secret_id_check.json.data.expiration_time | default('0001-01-01T00:00:00Z')) != '0001-01-01T00:00:00Z' and
+          (sg_seal_agent_secret_id_check.json.data.expiration_time | regex_replace('\.[0-9]+', '') |
+           to_datetime('%Y-%m-%dT%H:%M:%S%z')).timestamp() <= (lookup('pipe', 'date +%s') | int)) }}
     sg_seal_agent_rotator_needs_new_secret_id: >-
       {{ sg_seal_agent_rotator_existing_secret_id | length == 0 or
-         (sg_seal_agent_rotator_secret_id_check is defined and sg_seal_agent_rotator_secret_id_check.status == 404) }}
+         (sg_seal_agent_rotator_secret_id_check.status | default(404) in [204, 404]) or
+         ((sg_seal_agent_rotator_secret_id_check.json.data.expiration_time | default('0001-01-01T00:00:00Z')) != '0001-01-01T00:00:00Z' and
+          (sg_seal_agent_rotator_secret_id_check.json.data.expiration_time | regex_replace('\.[0-9]+', '') |
+           to_datetime('%Y-%m-%dT%H:%M:%S%z')).timestamp() <= (lookup('pipe', 'date +%s') | int)) }}
 
 # ── Mint new secret-ids where needed ──────────────────────────────────────────
 - name: Mint seal-agent secret-id
@@ -193,6 +199,23 @@
   when: sg_seal_agent_rotator_needs_new_secret_id | bool
 
 # ── Restart the agent Deployment when credentials changed ─────────────────────
+- name: Retire the replaced seal-agent secret-id accessor
+  ansible.builtin.uri:
+    url: "{{ sg_seal_agent_vault_addr }}/v1/auth/approle/role/sg-seal-autounseal/secret-id-accessor/destroy"
+    ca_path: "{{ sg_seal_agent_vault_ca }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ sg_seal_agent_ansible_token }}"
+    body_format: json
+    body:
+      secret_id_accessor: "{{ sg_seal_agent_secret_id_check.json.data.secret_id_accessor }}"
+    status_code: [200, 204]
+  when:
+    - sg_seal_agent_needs_new_secret_id | bool
+    - sg_seal_agent_secret_id_check.status | default(404) == 200
+  changed_when: true
+  no_log: true
+
 - name: Restart seal-agent Deployment to pick up new credentials
   kubernetes.core.k8s:
     api_version: apps/v1

@@ -6,14 +6,16 @@
 
 | Target | Description |
 |---|---|
-| `make lab` | Full 13-phase build in order + idempotency, secret-scan, boundary gates |
+| `make lab-times` | Print the last phase/gate timing table without running the lab |
+| `make ui-test-failover` | Run the explicitly enabled Playwright leader-deletion journey |
+| `make lab` | Full 13-phase build in order + idempotency, Terraform drift, secret-scan gates |
 | `make check` | Static gate: ShellCheck, `terraform fmt -check`, `terraform validate`, substrate grep, unit tests |
 | `make verify` | Full stack health: cluster operators, seal chain, Vault HA, licence, VSO, gates |
 | `make drift` | Terraform `plan -detailed-exitcode` on all 5 roots + Ansible `--check` on all 8 playbooks |
 | `make idempotency` | Re-run every Ansible phase; require `changed=0` (exceptions in `idempotency-allow.txt`) |
 | `make boundary` | 19 `sys/capabilities-self` checks across all four bootstrap tokens |
-| `make rotation-proof` | Rotate seal agent secret-id twice; prove old=400, current=200, count=1 |
-| `make secret-scan` | Grep tracked files for token patterns, PEM headers, `hvs.`, licence prefix |
+| `make rotation-proof` | Rotate seal agent secret-id twice; prove previous ID absent, current lookup=200, count=1 |
+| `make secret-scan` | Scan evidence, cached logs, state and tracked files for known secret values and token/key/licence patterns; check state modes |
 | `make identity-verify` | Every persona logs in through all auth methods and receives exactly their policies |
 | `make layers` | Emit `.build/layers.json` — per-phase resource counts, Ansible stats, gate results |
 | `make wl-a-rotate` | Write new KV version for `app-config`; VSO syncs within ~30 s; workload-a rolls |
@@ -26,7 +28,7 @@
 | `make crc-console` | Print console URL + kubeadmin credentials |
 | `make up` | Bring the full stack up from stopped state (scale up deployments, unseal) |
 | `make down` | Scale all workloads down gracefully (never deletes PVCs or `.secrets/`) |
-| `make reset` | DESTRUCTIVE: delete namespaces + generated state (requires typing `shift-gear`) |
+| `make reset` | DESTRUCTIVE: archive generated state and delete namespaces (requires typing `shift-gear`) |
 | `make infra` | Run only `tf infra apply` |
 | `make foundation` | Run only `tf foundation apply` |
 | `make workloads` | Run only `tf workloads apply` |
@@ -59,29 +61,33 @@
 ### From nothing
 
 ```sh
-make crc-reset     # destroy any previous CRC VM; provision + start fresh (~15–20 min)
+DRY_RUN=1 make reset             # review generated state to archive
+CONFIRM=shift-gear make reset    # destructive: archive state and delete lab namespaces
+make crc-reset                  # destructive: replace the CRC VM
 make lab           # all 13 phases + 3 gates
 ```
 
-**Indicative rebuild timings** (single Mac M-series, CRC 4.22):
+The rebuild was measured on 2026-10-10 on a 12-core Apple M4 Pro MacBook Pro with 48 GB RAM. CRC used 8 vCPU and 24,576 MB RAM. Creating the fresh CRC VM took 3m18s. The first `make lab` recorded 9m00s in `.cache/convergence-from-nothing.json`; its final evidence republish brought the command's wall time to 9m59s, so `make crc-reset && make lab` took 13m17s end to end. The adjacent re-run is the independent second `make lab`, finished 2026-10-10T16:44:37Z. `make lab-times` prints the phase and gate values from the latest run.
 
-| Phase | Tool | ~Duration |
-|---|---|---|
-| infra | tf | 30 s |
-| foundation | tf | 2 min |
-| prepare | ansible | 3 min |
-| workloads | tf | 8 min |
-| seal-init | ansible | 1 min |
-| seal | tf | 30 s |
-| agent | ansible | 30 s |
-| bootstrap | ansible | 2 min |
-| platform | tf | 1 min |
-| identity | ansible | 4 min |
-| configure | ansible | 2 min |
-| ux | ansible | 3 min |
-| validate | ansible | 1 min |
-| gates | — | 3 min |
-| **Total** | | **~31 min** |
+| Phase or gate | Tool | Rebuild from nothing | Converged re-run |
+| --- | --- | --- | --- |
+| infra | Terraform | 0m03s | 0m03s |
+| foundation | Terraform | 0m05s | 0m03s |
+| prepare | Ansible | 0m16s | 0m05s |
+| workloads | Terraform | 0m20s | 0m03s |
+| seal-init | Ansible | 0m19s | 0m06s |
+| seal | Terraform | 0m01s | 0m01s |
+| agent | Ansible | 0m13s | 0m11s |
+| bootstrap | Ansible | 0m36s | 0m10s |
+| platform | Terraform | 0m03s | 0m01s |
+| identity | Ansible | 1m13s | 0m31s |
+| configure | Ansible | 0m29s | 0m10s |
+| ux | Ansible | 2m11s | 0m59s |
+| validate | Ansible | 0m11s | 0m11s |
+| idempotency | Gate | 2m50s | 2m28s |
+| drift | Gate | 0m07s | 0m06s |
+| secret-scan | Gate | 0m02s | 0m03s |
+| Total | Recorded `make lab` time | 9m00s | 5m11s |
 
 ### Second `make lab`
 
@@ -142,30 +148,27 @@ followed by a full `make prepare && make vault-roll`.
 
 ## Seal agent secret-id rotation
 
-The rotator CronJob rotates the seal agent's AppRole secret-id every 24 hours. To rotate
-manually:
-
-```sh
-make agent         # runs sg_seal_agent; generates a new secret-id and restarts the seal-agent pod
-```
-
-To prove rotation:
+The `seal-rotator` CronJob runs every six hours (`0 */6 * * *`). The
+`sg-seal-autounseal` secret-id expires after 24 hours and permits repeated logins
+(`secret_id_num_uses = 0`). `make agent` reuses an existing valid ID; it is not a
+command to force rotation.
 
 ```sh
 make rotation-proof
 ```
 
-Output:
-- Old secret-id: `400 Permission Denied`
-- Current secret-id: `200 OK`
-- Count in Vault: `1`
+The proof runs two Jobs from the CronJob, checks that the agent holds a new ID,
+checks that the previous ID is absent and the current lookup returns 200, and
+requires exactly one ID. Controller logins cannot prove this because the role
+is bound to the cluster pod CIDR. The non-expiring rotator secret-id is a
+separate credential held in `seal-rotator-approle`.
 
 ---
 
 ## Dynamic lease renewal (VSO)
 
-`VaultDynamicSecret` resources have `renewalPercent: 80`. VSO renews the PostgreSQL credential
-at 80% of TTL. If the lease lapses (e.g., after a long Mac sleep):
+`VaultDynamicSecret` resources have `renewalPercent: 67`. VSO renews the PostgreSQL credential
+at 67% of TTL. If the lease lapses (e.g., after a long Mac sleep):
 
 ```sh
 make vso-status       # shows lastSyncTime and error if any
@@ -182,15 +185,20 @@ oc -n sg-workloads delete secret db-creds   # VSO re-creates it immediately
 
 ## Bootstrap token renewal
 
-Bootstrap tokens have a 72-hour TTL. They are renewed by `lab.sh` before each phase if less
-than 24 hours remain. To renew manually:
+Bootstrap tokens are periodic orphan tokens with a 24-hour period. The
+`seal-init` and `bootstrap` phases check existing tokens, reissue missing or
+refused tokens through their policy-specific roles, and renew valid tokens on
+every real run. Renewal is maintenance (`changed_when: false`), not a timed
+pre-phase action in `lab.sh`.
 
 ```sh
-vault token renew "$(cat .secrets/tokens/tf-platform)"      # requires the token itself
+make seal-init
+make bootstrap
 ```
 
-To mint new bootstrap tokens from scratch, re-run `make seal-init` and `make bootstrap`.
-This is only required if the tokens are expired.
+The bootstrap tasks use the locally retained root tokens to reconcile bootstrap
+policies and token roles and issue replacement tokens. Routine Terraform and
+configuration work use their scoped tokens.
 
 ---
 
@@ -250,40 +258,70 @@ make verify            # confirm licence expiry > 30 days
 
 ### Scenario 01 — Kill the active Vault pod
 
-| Step | Expected | Verified |
+| Step | Expected | Current review |
 |---|---|---|
-| `oc -n sg-vault delete pod vault-0` | Pod terminates | ✓ |
-| Raft elects new leader (vault-1 or vault-2) | HA status: 1 active, 2 voters → 3 voters when vault-0 rejoins | ✓ |
-| `make verify` | All ✓ | ✓ |
+| Delete the active Vault pod | Pod terminates | PASS; the running leader was deleted |
+| Raft elects a different leader | HA status returns to 1 active and 3 voters | PASS; replacement leader differed and the deleted pod rejoined |
+| `make verify` | All ✓ | PASS, 22/22 |
 
 ### Scenario 02 — Restart the seal agent
 
-| Step | Expected | Verified |
+| Step | Expected | Current review |
 |---|---|---|
-| `oc -n sg-vault-seal delete pod -l app=seal-agent` | Pod restarts, re-authenticates with AppRole | ✓ |
-| Cluster Vault: no sealing observed | Vault uses transit seal; seal agent restart does not seal the cluster | ✓ |
-| `make verify` | All ✓ | ✓ |
+| Delete the seal-agent pod | Pod restarts, re-authenticates with AppRole | PASS; replacement pod UID observed |
+| Cluster Vault: no sealing observed | Vault uses transit seal; seal agent restart does not seal the cluster | PASS; authenticated health remained available |
+| `make verify` | All ✓ | PASS, 22/22 |
 
 ### Scenario 06 — Static secret rotation
 
-| Step | Expected | Verified |
+| Step | Expected | Current review |
 |---|---|---|
-| `make wl-a-rotate` | New KV version written | ✓ |
-| VSO syncs `app-config` Secret within 30 s | `lastSyncTime` updated | ✓ |
-| workload-a rolls automatically | New pod reads new value | ✓ |
+| `make wl-a-rotate` | New KV version written | PASS |
+| VSO syncs `app-config` Secret within 30 s | `lastSyncTime` updated | PASS |
+| workload-a rolls automatically | New pod reads new value | PASS; scenario completed in 21 s |
 
 ### Scenario 07 — Dynamic credential revoked
 
-| Step | Expected | Verified |
+| Step | Expected | Current review |
 |---|---|---|
-| `vault lease revoke <lease>` in `database/creds/demo-reader` | Lease revoked | ✓ |
-| VSO requests new credential within `renewalPercent` cycle | New `db-creds` Secret created | ✓ |
-| workload-b continues running | Reads new credential | ✓ |
+| Revoke the exact `database/creds/demo-reader` lease | Lease revoked through the scoped path | PASS; broader revoke paths remained denied |
+| VSO requests new credential within `renewalPercent` cycle | New `db-creds` Secret created | PASS; username changed and the old PostgreSQL role disappeared |
+| workload-b continues running | Reads new credential | PASS; scenario completed in 148 s |
 
 ### Drift detection
 
 | Tool | Change made | Detected by |
 |---|---|---|
-| Terraform | `oc edit deployment vault-0` (add label) | `make drift` (tf plan shows diff) |
-| Ansible | LDAP group member added via `ldapmodify` | `make drift` (ansible check-mode reports change) |
-| VSO | `Secret` content edited manually | `make verify` (`VaultStaticSecret.status.lastSyncTime` check) |
+| Terraform | `oc -n sg-workloads edit deployment workload-a` (add a label) | `make drift` (tf plan shows diff) |
+| Ansible | sg-cli client name changed | Identity check mode reports change; LDAP membership is tested by fresh login in scenario 08 |
+| VSO | `app-config` Secret edited manually | Scenario 09 compared data hashes; VSO restored the Vault value after 6 s |
+
+## Scenario inventory
+
+| Scenario | What the script exercises |
+| --- | --- |
+| 01 | Active pod deletion and unsealed rejoin |
+| 02 | Seal-agent restart with cluster health probes |
+| 03 | Two rotator Jobs and secret-id lookup/list |
+| 04 | Seal-Vault restart and manual unseal |
+| 05 | Full down/up including VM stop/start |
+| 06 | KV source rotation, Secret sync and workload-a rollout |
+| 07 | Dynamic credential replacement and old-role removal |
+| 08 | Four reversible drift mutations with detection and restoration checks |
+| 09 | Hand-edit app-config; VSO restored the Vault value in 6 s in the proof run |
+
+All nine scenarios passed on 2026-10-09/10. Timings and key evidence are recorded in roadmap 03_01.
+
+## Run identity and publication recovery
+
+All supported mutation wrappers and scenarios share a target lock across checkouts. Nested Ansible/Node workers retain the owning run's authority even when they close inherited file descriptors; an unrelated process cannot acquire the held lock. A competing command exits 75 before mutation.
+
+The current attempt is `.build/run.json`, with a unique run ID, Kubernetes cluster UID, source revision/dirty flag, input digest, phase states and separate provisioning/publication results. The digest covers Terraform, Ansible, deployment templates, policies, scripts, collector, UI, scenarios, tests and workflows using relative paths and bytes. Generated state, credentials, dependencies and reports are excluded. Changes during a lab run fail convergence; keep inputs stable while testing.
+
+A failed attempt does not overwrite `.build/last-success.json`. A separate safe `run.json` ConfigMap key lets the console show the latest recorded attempt beside its dated observation. Publication requires API access and the kubelet's mount refresh; if status publication itself fails, the host record remains authoritative and the command reports it. The console cannot know about an unpublished host failure.
+
+If provisioning passed and final publication failed, use `make publish-evidence`; it verifies the live cluster UID and republishes UX/status without reapplying infrastructure. It refuses an incomplete provisioning run or another cluster. Existing snapshot reloads retain the original observation timestamp and become stale after 120 seconds; `make ux` creates a new observation. The seal-chain indicator and diagrams independently use live, read-only checks every 15 seconds while the tab is visible, with a 30-second freshness limit; an old snapshot cannot keep them green. See [runtime observation](runtime-observation.md). Missing, malformed, mixed-generation or future-dated observations cannot establish healthy current state.
+
+The console's application rotation returns write acceptance with a KV version and operation ID. It remains **accepted-unverified** until delivery can be independently correlated; a snapshot refresh alone cannot prove VSO delivery. Repeating the same operation ID in the session returns its receipt. A CAS conflict requires reloading before a new operation. A transport timeout is uncertain and does not authorize an automatic new write. Agent re-injection is explicitly unavailable; use the host runbook for lifecycle operations.
+
+See [credential operations](credential-operations.md), [session contract](session-contract.md), [field ownership](ownership.md) and the [Must delivery record](must-progress.md) for custody, access and actual verification status.

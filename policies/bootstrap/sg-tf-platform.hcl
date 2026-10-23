@@ -188,3 +188,12 @@ path "shift-gear/identity/*" {
 path "shift-gear/kv/*" {
   capabilities = ["deny"]
 }
+
+# Exact root maintenance identity structure, outside the application namespace.
+# Does not grant snapshot download or restore to Terraform.
+path "sys/policies/acl/sg-snapshot-reader" { capabilities = ["create", "read", "update", "delete"] }
+path "auth/token/roles/sg-snapshot-reader" { capabilities = ["create", "read", "update", "delete"] }
+
+# Root-issued, child-path-scoped fixture identity; never token or data access.
+path "sys/policies/acl/sg-component-proof" { capabilities = ["create", "read", "update", "delete"] }
+path "auth/token/roles/sg-component-proof" { capabilities = ["create", "read", "update", "delete"] }

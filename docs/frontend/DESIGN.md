@@ -71,7 +71,7 @@ Below diagram: two summary tiles (Pods → Pods page; Operator → Operator page
 ### Layers
 Dark hero + **Gates** row (4 cards: Idempotency · Drift · Secret scan · Validation, each with
 script name and pass/fail pill) + **Phases** table from `.build/layers.json` (interleaved
-Terraform/Ansible rows, each with status pill).
+Terraform/Ansible rows, each with status pill and measured duration; gates also show durations, with an em dash when unavailable).
 Terraform rows: indigo pill. Ansible rows: muted slate pill.
 
 ### Engines
@@ -113,8 +113,8 @@ Leader/standby nodes · Raft peers · agent token TTL · secret-id age · VSO CS
 licence expiry. Refreshes every 5 s.
 
 ### Sign-in
-Ink hero: "Vault Enterprise on OpenShift — provisioned, converged, sealed by design."
-One button: "Sign in with Vault via Keycloak."
+Hero: "One vault. Every layer."
+One button: "Sign in with Vault OIDC."
 
 ---
 
@@ -136,7 +136,7 @@ Cluster        ← seal chain + Raft + licence
 Topbar (persistent, floating glass):
 - Left: project name.
 - Centre: **Seal chain pill** — `● Seal chain 3/3` (green / amber / red).
-- Right: signed-in user · role badge (ADMIN / ENGINEER / AUDITOR / VIEWER) · Sign out.
+- Right: signed-in user · role badge (ADMIN / OPERATOR / ENGINEER / AUDITOR / MEMBER) · Sign out.
 
 ⌘K palette to jump to any page by name.
 
@@ -155,7 +155,7 @@ Topbar (persistent, floating glass):
 
 ## Honesty rules
 
-- Every number and status comes from the API. The UI never invents state.
+- Fleet/Cluster seal-chain diagrams and the topbar use fresh, shared runtime observations; other Cluster, Fleet, Pods, Routes and Operator panels retain host-published evidence snapshots; the shared Runtime sources disclosure adds independent bounded Vault, identity, VSO and deployment reads. The Audit page reads live collector data. Display the observation time and refresh with `make ux` after a scenario.
 - Timers count down from TTLs Vault returned. They show "expired" — they do not fake state changes.
 - Missing data renders as "not reported", never as a placeholder value.
 - A failing layer shows its actual error from the API, not a generic message.
@@ -171,3 +171,14 @@ Available at `/_design` when `NUXT_PUBLIC_DESIGN_SHEET=true`. Shows:
 - Footer preview
 
 Used for sign-off before production builds. Not accessible in production (`designSheet: false`).
+
+
+## Investigation increment (S01/S06)
+
+Preserve the daylight-glass tokens and a single ink hero per page. Evidence details disclose source, observation age/identity and cluster/run IDs, with a link to `/help#evidence`. The separate Runtime sources disclosure names the owner/resource and links failures to Vault, identity or delivery investigation steps. Native details/summary and links remain keyboard-operable. Error and stale text must not rely on color alone.
+
+Audit filters type and path within the recent buffer, renders 25 rows per page, clamps pagination after filter/data changes and explicitly marks collector-instance changes. Session expiry gets a persistent text notice; a 401 redirect explains why sign-in is required. Runtime/audit polling pauses in hidden tabs; runtime checks resume immediately on visibility and run every 15 seconds, while audit polling backs off on failure. See `docs/runtime-observation.md` for authority and freshness boundaries. Automated keyboard/axe/containment checks and visual review are separate acceptance steps.
+
+## C04: policy and ownership
+
+`/explorer` uses the existing shell, one ink hero and glass panels. Ownership cards identify desired scope, runtime writer, exact exception and verification method. A separately labelled expected-capability table supports maintenance identity, expectation and local declared-path filtering. Neither section implies current permission. A provenance panel shows publication identity, input digest and source hashes, with freshness explicitly measured at the last reload. Keyboard labels, counts, empty filters, missing declarations and retry feedback remain visible; bounded grid tracks retain wrapping at 195 CSS pixels and local table scrolling. The authenticated help guide links to the existing host-run proofs.

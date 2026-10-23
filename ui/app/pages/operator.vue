@@ -7,7 +7,7 @@ definePageMeta({ middleware: ['auth'] })
 const { session } = useAuth()
 const canRotate = computed(() => session.value?.roles.isOperator || session.value?.roles.isAdmin || false)
 
-const { data, status, refresh } = await useFetch<OperatorResponse>('/api/v1/operator/secrets', { server: false, lazy: true })
+const { data, status, refresh, error } = await useFetch<OperatorResponse>('/api/v1/operator/secrets', { server: false, lazy: true })
 const checking = computed(() => status.value === 'pending')
 let timer: ReturnType<typeof setInterval> | undefined
 onMounted(() => { timer = setInterval(() => refresh(), 15_000) })
@@ -22,18 +22,13 @@ async function rotate(name: string) {
   rotateError.value = null
   rotateSuccess.value = null
   try {
-    await $fetch(`/api/v1/operator/static-secrets/${encodeURIComponent(name)}/rotate`, { method: 'POST' })
-    // Poll until lastSyncTime changes
-    const before = data.value?.staticSecrets.find(s => s.name === name)?.lastSyncTime
-    let attempts = 0
-    while (attempts < 14) {
-      await new Promise(r => setTimeout(r, 3_000))
-      await refresh()
-      const after = data.value?.staticSecrets.find(s => s.name === name)?.lastSyncTime
-      if (after && after !== before) { rotateSuccess.value = name; break }
-      attempts++
-    }
-    if (!rotateSuccess.value) rotateError.value = `Sync did not complete within 45 s for ${name}`
+    const receipt = await $fetch<{ version: number | null; writeConfirmed: boolean }>(`/api/v1/operator/static-secrets/${encodeURIComponent(name)}/rotate`, {
+      method: 'POST', body: { operationId: crypto.randomUUID() },
+    })
+    rotateSuccess.value = receipt.writeConfirmed
+      ? `${name}: Vault accepted version ${receipt.version ?? 'not reported'}. VSO sync and consumer readiness are not yet verified.`
+      : `${name}: write outcome is uncertain. Do not repeat the rotation; verify from the host first.`
+    await refresh()
   } catch (e) {
     rotateError.value = `Rotation failed: ${(e as { message?: string }).message ?? 'unknown error'}`
   } finally {
@@ -63,7 +58,7 @@ function syncStatus(s: VsoSecret) {
         <div>
           <p class="eyebrow">Vault Secrets Operator · Kubernetes native secret delivery</p>
           <h1 id="operator-title">Operator</h1>
-          <p>Secrets synced by the Vault Secrets Operator. No Vault token in any workload pod. The pod sees a Kubernetes Secret — that is all.</p>
+          <p>Secrets synced by the Vault Secrets Operator. The VSO application containers have no Vault token. The pod sees a Kubernetes Secret — that is all.</p>
         </div>
         <button class="secondary-button" type="button" :disabled="checking" @click="refresh()">
           <svg class="button-icon" :class="{ spinning: checking }" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M16.5 10a6.5 6.5 0 1 1-1.9-4.6M16.5 3.5v5h-5" /></svg>
@@ -72,8 +67,10 @@ function syncStatus(s: VsoSecret) {
       </div>
     </section>
 
+    <SourceState :status="status" :has-data="!!data" :code="error?.statusCode" label="Operator observations" @retry="refresh()" />
+
     <p v-if="rotateError" class="inline-notice error" role="alert">{{ rotateError }}</p>
-    <p v-if="rotateSuccess" class="inline-notice" role="status" style="background:var(--vg-healthy-bg);color:var(--vg-healthy);">{{ rotateSuccess }} rotated and synced successfully.</p>
+    <p v-if="rotateSuccess" class="inline-notice" role="status" style="background:var(--vg-healthy-bg);color:var(--vg-healthy);">{{ rotateSuccess }}</p>
 
     <div v-if="checking && !data" class="skeleton" aria-label="Loading"><div /><div /></div>
 
@@ -106,7 +103,7 @@ function syncStatus(s: VsoSecret) {
                   @click="rotate(s.name)"
                 >
                   <svg v-if="rotating === s.name" class="button-icon spinning" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M16.5 10a6.5 6.5 0 1 1-1.9-4.6M16.5 3.5v5h-5" /></svg>
-                  {{ rotating === s.name ? 'Syncing…' : 'Rotate' }}
+                  {{ rotating === s.name ? 'Submitting…' : 'Rotate' }}
                 </button>
               </div>
             </article>
@@ -160,7 +157,7 @@ function syncStatus(s: VsoSecret) {
 
 <style scoped>
 .op-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-@media (max-width: 900px) { .op-grid { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { .op-grid { grid-template-columns: minmax(0, 1fr); } }
 .vso-list { display: grid; gap: 10px; }
 .vso-card { padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
 .vso-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
@@ -171,4 +168,9 @@ function syncStatus(s: VsoSecret) {
 .vso-meta dd { margin: 0; color: var(--vg-text-primary); overflow-wrap: anywhere; }
 .vso-actions { display: flex; justify-content: flex-end; margin-top: 4px; }
 .error-text { color: var(--vg-critical); font-size: 11.5px; }
+@media (max-width: 640px) {
+  .sg-layer-panel, .vso-card { min-width: 0; overflow-wrap: anywhere; }
+  .vso-meta div { flex-wrap: wrap; }
+  .vso-meta dd { min-width: 0; }
+}
 </style>

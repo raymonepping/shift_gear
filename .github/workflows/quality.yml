@@ -1,0 +1,37 @@
+name: Quality contracts
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.11.4'
+          terraform_wrapper: false
+      - name: Install controller and UI dependencies
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install ansible-core==2.19.3 ansible-lint==25.9.2 jmespath kubernetes hvac
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          npm ci --prefix ui
+      - name: Static and behavior checks (no lab credentials)
+        run: |
+          make check
+          make must-test
+          make ui-check
+          SG_SCAN_MODE=offline ./scripts/secret-scan.sh
+          git diff --check

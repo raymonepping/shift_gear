@@ -2,12 +2,14 @@
 const route = useRoute()
 const { session, load } = useAuth()
 const { sealChainLabel, startLive, stopLive } = useFleet()
+const runtime = useRuntime()
 
 onMounted(async () => {
   await load()
   startLive()
+  runtime.startLive()
 })
-onBeforeUnmount(() => stopLive())
+onBeforeUnmount(() => { stopLive(); runtime.stopLive() })
 
 const nav = computed(() => [
   { to: '/', label: 'Fleet', icon: 'fleet', active: route.path === '/' },
@@ -20,13 +22,14 @@ const nav = computed(() => [
   { to: '/agent', label: 'Agent', icon: 'agent', active: route.path === '/agent' },
   { to: '/audit', label: 'Audit', icon: 'audit', active: route.path === '/audit' },
   { to: '/cluster', label: 'Cluster', icon: 'cluster', active: route.path === '/cluster' },
+  { to: '/explorer', label: 'Ownership', icon: 'layers', active: route.path === '/explorer' },
 ])
 
 const title = computed(() => {
   const labels: Record<string, string> = {
     '/': 'Fleet', '/layers': 'Layers', '/engines': 'Engines', '/pods': 'Pods',
     '/routes': 'Routes', '/operator': 'Operator', '/ansible': 'Ansible',
-    '/agent': 'Agent', '/audit': 'Audit', '/cluster': 'Cluster',
+    '/agent': 'Agent', '/audit': 'Audit', '/cluster': 'Cluster', '/explorer': 'Policy and ownership',
   }
   return labels[route.path] ?? 'Shift Gear'
 })
@@ -73,7 +76,7 @@ const chain = computed(() => sealChainLabel.value)
         <div class="sidebar-footer">
           <p class="foot-title">Shift Gear</p>
           <p class="foot-meta">Vault Enterprise · OpenShift · Terraform + Ansible</p>
-          <p class="foot-meta">Observe-only console — actions run from the host.</p>
+          <p class="foot-meta">Automation runs from the host. Scoped secret rotation is available to operators.</p>
         </div>
       </div>
     </aside>
@@ -111,6 +114,8 @@ const chain = computed(() => sealChainLabel.value)
         </header>
       </div>
       <main id="main" class="sg-content">
+        <SessionNotice />
+        <EvidenceNotice />
         <slot />
       </main>
       <ShiftGearFooter />
@@ -184,7 +189,8 @@ const chain = computed(() => sealChainLabel.value)
   .sg-sidebar { display: none; }
   .sg-topbar { height: auto; flex-wrap: wrap; padding-top: 8px; padding-bottom: 8px; row-gap: 6px; }
   .topbar-left { display: contents; }
-  .mobile-nav { display: flex; order: 3; flex-basis: 100%; }
+  .mobile-nav { display: flex; order: 3; flex-basis: 100%; min-width: 0; max-width: 100%; overflow-x: auto; padding-bottom: 6px; }
+  .mobile-nav a { flex-shrink: 0; }
   .mobile-brand { display: inline; }
   .page-title { display: none; }
 }
@@ -193,5 +199,7 @@ const chain = computed(() => sealChainLabel.value)
   .topbar-wrap { padding: 10px 16px 0; }
   .sg-topbar { padding: 0 14px; }
   .sg-content { padding: 16px 16px 32px; }
+  .topbar-right { flex-wrap: wrap; min-width: 0; max-width: 100%; }
+  .cluster-pill { white-space: normal; overflow-wrap: anywhere; }
 }
 </style>

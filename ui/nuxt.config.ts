@@ -32,6 +32,7 @@ export default defineNuxtConfig({
     },
   },
   runtimeConfig: {
+    keycloakJwksUrl: 'https://keycloak.sg-identity.svc:8443/realms/shift-gear/protocol/openid-connect/certs',
     // Server-only. Override with NUXT_<NAME> env vars in the Deployment.
     vaultAddr: 'https://vault-active.sg-vault.svc:8200',   // NUXT_VAULT_ADDR
     vaultNamespace: 'shift-gear',                           // NUXT_VAULT_NAMESPACE
@@ -39,9 +40,9 @@ export default defineNuxtConfig({
     oidcRedirectUri: '',                                    // NUXT_OIDC_REDIRECT_URI — set by ansible ux
     keycloakLogoutUrl: '',                                  // NUXT_KEYCLOAK_LOGOUT_URL — set by terraform workloads
     evidenceDir: '/evidence',                               // NUXT_EVIDENCE_DIR — ConfigMap sg-evidence
+    metricsBackend: 'none',                                 // optional: none / opentelemetry / prometheus
+    auditArchiveEnabled: false,                             // independent opt-in
     auditApiBase: '',                                       // NUXT_AUDIT_API_BASE — internal API server
-    kubeHost: '',                                           // NUXT_KUBE_HOST — e.g. https://api.crc.testing:6443
-    kubeToken: '',                                          // NUXT_KUBE_TOKEN — service account token
     public: {
       refreshSeconds: 15,
       designSheet: 'false',  // NUXT_PUBLIC_DESIGN_SHEET=true enables /_design
@@ -61,7 +62,9 @@ export default defineNuxtConfig({
           + "script-src 'self' 'unsafe-inline'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
         'X-Frame-Options': 'DENY',
         'X-Content-Type-Options': 'nosniff',
-        'Referrer-Policy': 'no-referrer',
+        // Native same-origin POST forms must retain their Origin for the
+        // mutation policy. Cross-origin referrers still remain suppressed.
+        'Referrer-Policy': 'same-origin',
         'Cache-Control': 'no-store',
       },
     },

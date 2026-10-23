@@ -8,6 +8,47 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Live seal-chain observation shared by the topbar and Fleet/Cluster diagrams: bounded TLS-verified member health, named Agent readiness, 15-second foreground polling, 30-second expiry and fail-closed status; no telemetry dependency or additional Vault credential. See [validation](docs/seal-chain-observation.md).
+
+- C02/C03 local acceptance: 43/43 live steps, 148/148 standard browser tests, dedicated failover and all nine scenarios; repository telemetry defaults remain disabled.
+- C02 optional OpenTelemetry (preferred) / Prometheus scraping and independently optional bounded, projected audit metadata retention with independent authenticated UI source states and access/redaction/restart proof tooling. Local storage does not establish external custody or M06 recovery.
+- C03 isolated Vault Agent database file consumer, separate JWT/policy/connection/table scope and actual lease/isolation/restart proof tooling; [acceptance status](docs/c02-c03-progress.md) records validation.
+
+- C04 read-only policy/ownership explorer with published declaration hashes, local filters and contextual runbooks; no additional runtime privileges. Locally accepted with 41/41 live steps and 138/138 standard browser tests.
+
+- Source-bound local acceptance for S01/S02/S05/S06: 41 live steps, 130 browser tests, failover and all nine scenarios; M06 isolated restore remains deferred.
+- Bounded, TLS-verified runtime observation with a dedicated GET-only identity for four named Kubernetes resources; independent source state, freshness and transport reasons.
+- Dedicated PKI/Transit issuance, revocation, expiry, rotation and rewrap proofs; live observer RBAC and destructive-plan guard checks.
+- Deliverable provider lockfiles, readonly initialization, immutable deployed/build image inputs, explicit OLM approval and private pre-upgrade snapshots with scoped download-only identities.
+- Stateless collector Node 22→24 upgrade, configuration rollback/audit recovery and re-upgrade rehearsal, plus current/historical image inventory.
+- Investigation guide and source links, shared request feedback/retry, audit path filtering/pagination/restart marker and reactive session-expiry notices.
+
+- Versioned console evidence with observation age, source availability, schema validation and cluster/run identity checks; responsive layouts down to 195 CSS pixels.
+- Safe KV rotation receipts, compare-and-set writes, preserved unrelated fields and direct authorization tests across all five personas.
+- Validated provider backchannel logout, bounded sessions, mutation-origin checks and a bounded metadata-only audit collector.
+- Target-specific automation locks, source-bound run records, independent evidence publication/retry, credential diagnostics and protected live-proof/release workflows.
+- Credential expiry/replacement and same-root certificate renewal drills; explicit Terraform/Ansible field ownership and task-level idempotency rules.
+- PRD, MoSCoW roadmap, ownership/session/credential runbooks and expanded article draft `article/06.md`.
+
+### Fixed
+
+- Expired bootstrap tokens whose lookup returned HTTP 200: TTL/renewability now determine replacement, with old accessors retired after replacements are persisted.
+- OpenShift-owned registry references on the observer ServiceAccount, bounded to the declared controller-owned fields.
+- Partial/reordered release receipts: execution and verification now share the complete ordered ladder and relative scenario paths.
+
+- Repeated Keycloak client changes caused by an empty logout-redirect attribute, and Keycloak root routing to the application's `/signin` page.
+- Browser TLS verification, stale-snapshot failover assertions and reuse of browser sessions invalidated by provider logout.
+- Scenario 08 drift detection/restoration and scenario 01 completion before public HA/Raft recovery.
+- Long-lived reviewer JWT in current Terraform state, Agent token exposure through the application's shared volume, and expired SecretID repair/revocation.
+- CRC control commands modifying project kubeconfig, nested cold-start lock handoff, hypervisor exit with its controller and chrony configuration errors.
+
+### Verification
+
+- Local live proof on 2026-10-15 passed all 36 steps, including 18 static checks, 33 offline regressions, 120 browser tests, separate failover, screenshots, all nine scenarios, three labs and three full drift checks.
+- M06 isolated recovery remains owner-deferred. Protected GitHub release execution is still required; the uncommitted local proof is not a release receipt. See `docs/must-progress.md`.
+
 ---
 
 ## [1.0.0] — 2025-07-01

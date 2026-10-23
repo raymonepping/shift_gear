@@ -1,0 +1,161 @@
+---
+# C03 isolated fixture: separate DB admin connection and schema, no reuse/reset
+# of the existing rotated vault_admin credential or demo-reader role.
+- name: Configure isolated Agent database consumer
+  no_log: true
+  block:
+    - name: Read isolated database schema state
+      kubernetes.core.k8s_exec:
+        kubeconfig: "{{ sg_configure_kubeconfig }}"
+        namespace: sg-workloads
+        pod: "{{ sg_configure_pg_pod }}"
+        command: >-
+          psql -U postgres -d shiftgear -tAc
+          "SELECT to_regclass('sg_agent.canary') IS NOT NULL"
+      register: sg_configure_agent_db_schema
+      failed_when: sg_configure_agent_db_schema.rc | default(1) != 0
+      changed_when: false
+      check_mode: false
+
+    - name: Create isolated schema and non-secret canary when absent
+      kubernetes.core.k8s_exec:
+        kubeconfig: "{{ sg_configure_kubeconfig }}"
+        namespace: sg-workloads
+        pod: "{{ sg_configure_pg_pod }}"
+        command: >-
+          psql -U postgres -d shiftgear -v ON_ERROR_STOP=1 -c
+          "CREATE SCHEMA IF NOT EXISTS sg_agent;
+           CREATE TABLE sg_agent.canary (id integer PRIMARY KEY);
+           INSERT INTO sg_agent.canary VALUES (1);"
+      register: sg_configure_agent_db_create_schema
+      failed_when: sg_configure_agent_db_create_schema.rc | default(1) != 0
+      when: sg_configure_agent_db_schema.stdout | trim != 't'
+      changed_when: true
+
+    - name: Read isolated Vault database connection
+      ansible.builtin.uri:
+        url: "{{ sg_configure_vault_addr }}/v1/database/config/agent-isolated"
+        ca_path: "{{ sg_configure_vault_ca }}"
+        headers:
+          X-Vault-Token: "{{ sg_vault_token }}"
+          X-Vault-Namespace: shift-gear
+        status_code: [200, 404]
+      register: sg_configure_agent_db_connection
+      check_mode: false
+
+    - name: Require reviewed connection target for an existing isolated connection
+      ansible.builtin.assert:
+        that:
+          - sg_configure_agent_db_connection.json.data.connection_details.connection_url == sg_configure_db_url
+          - sg_configure_agent_db_connection.json.data.allowed_roles | sort == ['agent-reader']
+        fail_msg: Isolated database connection drift needs reviewed maintenance; do not reset existing credentials.
+      when: sg_configure_agent_db_connection.status == 200
+
+    - name: Generate initial isolated connection password in memory
+      ansible.builtin.set_fact:
+        sg_configure_agent_db_initial_password: "{{ lookup('ansible.builtin.password', '/dev/null', length=40, chars=['ascii_letters', 'digits']) }}"
+      when: sg_configure_agent_db_connection.status == 404
+
+    - name: Establish isolated admin only while its Vault connection is absent
+      kubernetes.core.k8s_exec:
+        kubeconfig: "{{ sg_configure_kubeconfig }}"
+        namespace: sg-workloads
+        pod: "{{ sg_configure_pg_pod }}"
+        command: >-
+          psql -U postgres -d shiftgear -v ON_ERROR_STOP=1 -c
+          "DO 'BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname=''agent_vault_admin'') THEN
+              CREATE ROLE agent_vault_admin LOGIN CREATEROLE;
+            END IF;
+           END';
+           ALTER ROLE agent_vault_admin PASSWORD '{{ sg_configure_agent_db_initial_password }}';
+           GRANT CONNECT ON DATABASE shiftgear TO agent_vault_admin WITH GRANT OPTION;
+           GRANT USAGE ON SCHEMA sg_agent TO agent_vault_admin WITH GRANT OPTION;
+           GRANT SELECT ON sg_agent.canary TO agent_vault_admin WITH GRANT OPTION;"
+      register: sg_configure_agent_db_create_admin
+      failed_when: sg_configure_agent_db_create_admin.rc | default(1) != 0
+      when: sg_configure_agent_db_connection.status == 404
+      changed_when: true
+
+    - name: Create isolated Vault database connection without persisting its password locally
+      ansible.builtin.uri:
+        url: "{{ sg_configure_vault_addr }}/v1/database/config/agent-isolated"
+        ca_path: "{{ sg_configure_vault_ca }}"
+        headers:
+          X-Vault-Token: "{{ sg_vault_token }}"
+          X-Vault-Namespace: shift-gear
+        method: POST
+        body_format: json
+        body:
+          plugin_name: postgresql-database-plugin
+          connection_url: "{{ sg_configure_db_url }}"
+          username: agent_vault_admin
+          password: "{{ sg_configure_agent_db_initial_password }}"
+          allowed_roles: [agent-reader]
+          verify_connection: true
+        status_code: [200, 204]
+      when: sg_configure_agent_db_connection.status == 404
+      changed_when: true
+
+    - name: Define isolated short-lived read role
+      ansible.builtin.set_fact:
+        sg_configure_agent_db_role:
+          db_name: agent-isolated
+          creation_statements:
+            - "CREATE ROLE \"{{ '{{name}}' }}\" WITH LOGIN PASSWORD '{{ '{{password}}' }}' VALID UNTIL '{{ '{{expiration}}' }}';"
+            - "GRANT CONNECT ON DATABASE shiftgear TO \"{{ '{{name}}' }}\";"
+            - "GRANT USAGE ON SCHEMA sg_agent TO \"{{ '{{name}}' }}\";"
+            - "GRANT SELECT ON sg_agent.canary TO \"{{ '{{name}}' }}\";"
+          revocation_statements:
+            - "REVOKE ALL ON sg_agent.canary FROM \"{{ '{{name}}' }}\";"
+            - "REVOKE USAGE ON SCHEMA sg_agent FROM \"{{ '{{name}}' }}\";"
+            - "REVOKE CONNECT ON DATABASE shiftgear FROM \"{{ '{{name}}' }}\";"
+            - "DROP ROLE IF EXISTS \"{{ '{{name}}' }}\";"
+          default_ttl: 60
+          max_ttl: 120
+
+    - name: Read isolated role
+      ansible.builtin.uri:
+        url: "{{ sg_configure_vault_addr }}/v1/database/roles/agent-reader"
+        ca_path: "{{ sg_configure_vault_ca }}"
+        headers:
+          X-Vault-Token: "{{ sg_vault_token }}"
+          X-Vault-Namespace: shift-gear
+        status_code: [200, 404]
+      register: sg_configure_agent_db_role_read
+      check_mode: false
+
+    - name: Reconcile isolated role only when it differs
+      ansible.builtin.uri:
+        url: "{{ sg_configure_vault_addr }}/v1/database/roles/agent-reader"
+        ca_path: "{{ sg_configure_vault_ca }}"
+        headers:
+          X-Vault-Token: "{{ sg_vault_token }}"
+          X-Vault-Namespace: shift-gear
+        method: POST
+        body_format: json
+        body: "{{ sg_configure_agent_db_role }}"
+        status_code: [200, 204]
+      changed_when: true
+      when: >-
+        sg_configure_agent_db_role_read.status == 404 or
+        sg_configure_agent_db_role_read.json.data.db_name != sg_configure_agent_db_role.db_name or
+        (sg_configure_agent_db_role_read.json.data.default_ttl | int) != sg_configure_agent_db_role.default_ttl or
+        (sg_configure_agent_db_role_read.json.data.max_ttl | int) != sg_configure_agent_db_role.max_ttl or
+        sg_configure_agent_db_role_read.json.data.creation_statements != sg_configure_agent_db_role.creation_statements or
+        sg_configure_agent_db_role_read.json.data.revocation_statements != sg_configure_agent_db_role.revocation_statements
+
+- name: Wait for isolated Agent database consumer readiness after auth and DB configuration
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ sg_configure_kubeconfig }}"
+    api_version: apps/v1
+    kind: Deployment
+    namespace: sg-workloads
+    name: sg-agent-db
+  register: sg_configure_agent_db_ready
+  until: >-
+    sg_configure_agent_db_ready.resources | length == 1 and
+    (sg_configure_agent_db_ready.resources[0].status.readyReplicas | default(0) | int) == 1
+  retries: 36
+  delay: 5
+  when: not ansible_check_mode

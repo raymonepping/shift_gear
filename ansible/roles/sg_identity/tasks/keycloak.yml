@@ -177,7 +177,9 @@
     implicit_flow_enabled: false
     service_accounts_enabled: false
     redirect_uris: "{{ item.redirects }}"
-    valid_post_logout_redirect_uris: "{{ item.post_logout_redirects | default([]) }}"
+    # Keycloak drops an empty logout attribute; omit it for clients without
+    # logout redirects so the module does not recreate it on every run.
+    valid_post_logout_redirect_uris: "{{ item.post_logout_redirects | default(omit) }}"
     backchannel_logout_url: "{{ item.backchannel_logout_url | default(omit) }}"
     web_origins: "{{ item.origins | default([]) }}"
     protocol_mappers:

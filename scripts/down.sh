@@ -13,6 +13,7 @@ set -euo pipefail
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "${SCRIPT_DIR}/common.sh"
+sg_lock "$@"
 
 require_cmd oc
 
@@ -23,24 +24,25 @@ require_kubeconfig
 
 scale() {
   local ns="$1" selector="$2" replicas="$3"
-  oc -n "${ns}" scale deployment --selector "${selector}" --replicas "${replicas}" 2>/dev/null || true
+  oc -n "${ns}" scale deployment --selector "${selector}" --replicas "${replicas}" 2>/dev/null
 }
 
 case "${action}" in
 
 # ── down ──────────────────────────────────────────────────────────────────────
 down)
+  "${SCRIPT_DIR}/crc-health.sh" --require-control
   info "Scaling down — application namespaces first, seal Vault last"
   for ns in sg-app sg-workloads sg-identity; do
     info "  scale ${ns} → 0"
-    oc -n "${ns}" scale deployment --all --replicas 0 2>/dev/null || true
+    oc -n "${ns}" scale deployment --all --replicas 0 2>/dev/null
   done
   info "  scale sg-vault → 0 (statefulset)"
-  oc -n sg-vault scale statefulset vault --replicas 0 2>/dev/null || true
+  oc -n sg-vault scale statefulset vault --replicas 0 2>/dev/null
   info "  scale seal-agent → 0"
-  oc -n sg-vault-seal scale deployment seal-agent --replicas 0 2>/dev/null || true
+  oc -n sg-vault-seal scale deployment seal-agent --replicas 0 2>/dev/null
   info "  scale sg-vault-seal → 0 (statefulset)"
-  oc -n sg-vault-seal scale statefulset vault-seal --replicas 0 2>/dev/null || true
+  oc -n sg-vault-seal scale statefulset vault-seal --replicas 0 2>/dev/null
   ok "All workloads scaled to 0"
   "${SCRIPT_DIR}/crc-down.sh"
   ok "down complete"
@@ -56,38 +58,51 @@ up)
   oc -n sg-vault-seal scale statefulset vault-seal --replicas 1
   info "Waiting for seal Vault pod"
   oc -n sg-vault-seal wait pod -l app.kubernetes.io/instance=vault-seal \
-    --for=condition=Ready --timeout=120s 2>/dev/null || true
+    --for=condition=Ready --timeout=180s
 
   info "Unsealing seal Vault"
   "${SCRIPT_DIR}/ansible-run.sh" unseal
 
   info "Scaling seal-agent up"
   oc -n sg-vault-seal scale deployment seal-agent --replicas 1
-
-  # If the agent cannot authenticate, the secret-id expired — re-mint it
-  if ! oc -n sg-vault-seal wait deployment seal-agent \
-      --for=condition=Available --timeout=60s 2>/dev/null; then
-    warn "Seal agent not ready — secret-id may have expired. Running make agent..."
-    "${SCRIPT_DIR}/ansible-run.sh" agent
-  fi
+  # Availability does not prove that the in-memory token survived downtime.
+  # Reauthenticate, repair expired IDs if necessary, and prove Transit before
+  # asking main Vault to unseal.
+  oc -n sg-vault-seal rollout restart deployment/seal-agent
+  oc -n sg-vault-seal rollout status deployment/seal-agent --timeout=180s
+  "${SCRIPT_DIR}/ansible-run.sh" agent
 
   info "Scaling main Vault cluster up"
   oc -n sg-vault scale statefulset vault --replicas 3
   info "Waiting for Vault pods (auto-unseals through seal agent)"
   oc -n sg-vault wait pod -l app.kubernetes.io/name=vault \
-    --for=condition=Ready --timeout=300s 2>/dev/null || true
+    --for=condition=Ready --timeout=300s
+  python3 "${SCRIPT_DIR}/wait-raft.py" --unsealed
 
   info "Scaling identity stack up"
-  oc -n sg-identity scale deployment --all --replicas 1 2>/dev/null || true
+  oc -n sg-identity scale deployment --all --replicas 1
+  oc -n sg-identity wait deployment --all --for=condition=Available --timeout=300s
 
   info "Scaling workloads up"
-  oc -n sg-workloads scale deployment --all --replicas 1 2>/dev/null || true
+  oc -n sg-workloads scale deployment --all --replicas 1
+  oc -n sg-workloads wait deployment --all --for=condition=Available --timeout=300s
 
   info "Scaling sg-app up"
-  oc -n sg-app scale deployment --all --replicas 1 2>/dev/null || true
+  oc -n sg-app scale deployment --all --replicas 1
+  # Init auth can retain a five-minute backoff from the sealed interval.
+  if [[ "$(oc -n sg-app get deployment agent-demo -o jsonpath='{.status.availableReplicas}')" != 1 ]]; then
+    oc -n sg-app rollout restart deployment/agent-demo
+  fi
+  oc -n sg-app wait deployment --all --for=condition=Available --timeout=300s
+
+  info "Waiting for Vault Secrets Operator reconciliation"
+  oc -n sg-workloads wait vaultstaticsecret/app-config \
+    --for=condition=SecretSynced --timeout=180s
+  oc -n sg-workloads wait vaultdynamicsecret/db-creds \
+    --for=condition=SecretSynced --timeout=180s
 
   info "Running make verify"
-  make -C "${ROOT_DIR}" verify || warn "make verify: some checks failed — see output above"
+  VERIFY_SCOPE=runtime make -C "${ROOT_DIR}" verify
 
   ok "up complete"
   ;;
@@ -128,6 +143,9 @@ reset)
     [[ "${confirm}" == "shift-gear" ]] || { warn "Aborted."; exit 1; }
   fi
 
+  target_id="$(oc --request-timeout=5s get namespace kube-system -o jsonpath='{.metadata.uid}')"
+  [[ -n "${target_id}" ]] || die "Cannot verify destructive target"
+  [[ "${CONFIRM_CLUSTER_ID:-}" == "${target_id}" ]] || die "Set CONFIRM_CLUSTER_ID to the displayed target UID from make doctor before reset: ${target_id}"
   ts="$(date -u +%Y%m%dT%H%M%SZ)"
   archive="${SECRETS_DIR}/archive/${ts}"
   mkdir -p "${archive}"
@@ -142,7 +160,7 @@ reset)
 
   info "Deleting OpenShift namespaces"
   for ns in "${namespaces[@]}"; do
-    oc delete namespace "${ns}" --ignore-not-found 2>/dev/null || true
+    oc delete namespace "${ns}" --ignore-not-found 2>/dev/null
   done
 
   # Cluster-scoped objects Terraform owns outlive the namespaces; with the
@@ -150,9 +168,9 @@ reset)
   info "Deleting the cluster-scoped objects Terraform owns"
   csv="$(oc -n openshift-operators get subscription vault-secrets-operator \
     -o jsonpath='{.status.installedCSV}' 2>/dev/null || true)"
-  oc -n openshift-operators delete subscription vault-secrets-operator --ignore-not-found 2>/dev/null || true
-  [[ -n "${csv}" ]] && oc -n openshift-operators delete csv "${csv}" --ignore-not-found 2>/dev/null || true
-  oc delete clusterrolebinding vault-token-reviewer --ignore-not-found 2>/dev/null || true
+  oc -n openshift-operators delete subscription vault-secrets-operator --ignore-not-found 2>/dev/null
+  [[ -n "${csv}" ]] && oc -n openshift-operators delete csv "${csv}" --ignore-not-found 2>/dev/null
+  oc delete clusterrolebinding vault-token-reviewer --ignore-not-found 2>/dev/null
 
   ok "Reset complete — CRC VM preserved, lab CA kept ('make trust' still applies)."
   info "Next: 'make lab' to rebuild on this VM, or 'make crc-reset && make lab' for a fresh VM."

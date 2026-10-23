@@ -1,22 +1,27 @@
 // tests/signout.spec.ts — sign-out journey.
 // Signs in fresh (does NOT reuse stored state) so the stored sessions
-// that other specs depend on are never destroyed.
+// are independent; provider logout deliberately invalidates all BFF sessions
+// for the subject, including sessions saved by other specs.
 //
 // Sign-out now redirects through Keycloak's end-session endpoint before
 // returning to /signin. The URL assertion waits long enough for the
 // extra Keycloak redirect to complete.
-import { chromium, expect, test } from '@playwright/test'
+import { expect, test } from '@playwright/test'
 import { BASE, signIn } from './auth'
 import { passwordOf } from './users'
 
-test('sign out lands on /signin and invalidates the session', async () => {
+test('sign out lands on /signin and invalidates the session', async ({ browser, page }) => {
   // Fresh browser context — isolated from every stored state.
-  const browser = await chromium.launch()
-  const context = await browser.newContext({ ignoreHTTPSErrors: true })
-  const page = await context.newPage()
+  const other = await browser.newContext()
 
   try {
-    await signIn(page, 'ben')
+    await test.step('authenticate the initiating session', () => signIn(page, 'ben'))
+    expect(await (await page.request.get(`${BASE}/api/session`)).json()).toMatchObject({ username: 'ben' })
+    const otherPage = await other.newPage()
+    await test.step('authenticate an independent second session', () => signIn(otherPage, 'ben'))
+    const secondSession = await other.request.get(`${BASE}/api/session`)
+    expect(secondSession.status()).toBe(200)
+    expect(await secondSession.json()).toMatchObject({ username: 'ben' })
 
     // Confirm we are signed in
     await expect(page).toHaveURL(new RegExp(`^${BASE}/?$`))
@@ -24,7 +29,13 @@ test('sign out lands on /signin and invalidates the session', async () => {
     // Click Sign out — the form submits POST /auth/logout → Keycloak
     // end-session. Keycloak may show a "Do you want to log out?" confirmation
     // page; if so, click through it. Then it redirects back to /signin.
-    await page.click('button.persona-out')
+    await test.step('submit logout from the initiating browser', async () => {
+      await page.bringToFront()
+      await page.waitForLoadState('networkidle')
+      const button = page.getByRole('button', { name: 'Sign out', exact: true })
+      await expect(button).toBeVisible()
+      await button.click({ timeout: 10_000 })
+    })
     await page.waitForLoadState('networkidle')
 
     // Handle optional Keycloak logout confirmation page.
@@ -44,13 +55,15 @@ test('sign out lands on /signin and invalidates the session', async () => {
     // Session cookie is gone — /api/session returns 401
     const sessionResp = await page.request.get(`${BASE}/api/session`)
     expect(sessionResp.status()).toBe(401)
+    // Provider backchannel maps issuer+subject through Vault's OIDC metadata.
+    // A second BFF session must be invalidated without using its logout route.
+    await expect.poll(async () => (await other.request.get(`${BASE}/api/session`)).status(), { timeout: 20_000 }).toBe(401)
 
     // Navigating to / redirects back to /signin
     await page.goto(`${BASE}/`)
     await expect(page).toHaveURL(`${BASE}/signin`, { timeout: 10_000 })
   } finally {
-    await context.close()
-    await browser.close()
+    await other.close().catch(() => {})
   }
 })
 

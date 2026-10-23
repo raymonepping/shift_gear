@@ -8,7 +8,8 @@ export default defineEventHandler(async (event) => {
   if (error) return sendRedirect(event, `/signin?error=${encodeURIComponent(desc || error)}`)
 
   const nonce = getCookie(event, 'sg_oidc_nonce') ?? ''
-  deleteCookie(event, 'sg_oidc_nonce', { path: '/auth' })
+  deleteCookie(event, 'sg_oidc_nonce', { path: '/auth', secure: String(useRuntimeConfig().oidcRedirectUri).startsWith('https://'), sameSite: 'lax' })
+  if (!state || !code || !nonce) throw createError({ statusCode: 400, statusMessage: 'incomplete sign-in callback' })
 
   const r = await vaultCall('GET', 'auth/oidc/oidc/callback', {
     query: { state, code, client_nonce: nonce },
@@ -40,6 +41,8 @@ export default defineEventHandler(async (event) => {
   const displayName = metadata?.display_name ?? username
 
   await createSession(event, {
+    oidcSubject: metadata?.oidc_subject,
+    oidcIssuer: String(useRuntimeConfig().keycloakLogoutUrl).split('/protocol/')[0],
     vaultToken: token,
     username,
     displayName,

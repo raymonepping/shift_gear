@@ -76,7 +76,7 @@ run "all_platform_policies_declared" {
 
   assert {
     condition = alltrue([
-      for p in ["sg-engineer", "sg-operator", "sg-approver", "sg-auditor", "sg-vso", "sg-api", "sg-agent-demo"] :
+      for p in ["sg-engineer", "sg-operator", "sg-approver", "sg-auditor", "sg-vso", "sg-api", "sg-agent-demo", "sg-agent-db"] :
       contains(var.platform_policies, p)
     ])
     error_message = "All seven platform policies must be declared."

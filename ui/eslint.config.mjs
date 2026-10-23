@@ -17,4 +17,8 @@ export default withNuxt(
       'no-console': ['warn', { allow: ['error', 'warn'] }],
     },
   },
+  {
+    files: ['unit/**/*.mjs'],
+    rules: { '@typescript-eslint/no-unused-vars': 'off', 'no-unused-vars': 'error' },
+  },
 )

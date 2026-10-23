@@ -39,10 +39,10 @@ output "cluster" {
 | `apps_domain` | The wildcard Route domain | **Yes** — read from `ingresses.config.openshift.io/cluster` `.spec.domain` |
 | `pod_cidr` | The pod network CIDR | **Yes** — read from `networks.config.openshift.io/cluster` `.status.clusterNetwork[0].cidr` |
 | `kubeconfig_path` | Path to a valid kubeconfig | No — passed as `var.kubeconfig_path` (default: `.secrets/kube/config`) |
-| `ingress_ca_path` | Path to the ingress TLS CA | **Yes** — extracted from `ingress-operator` secret in `openshift-ingress-operator` |
+| `ingress_ca_path` | Path to the ingress TLS CA | Fetched from ConfigMap `default-ingress-cert` in `openshift-config-managed`; written to `.secrets/kube/ingress-ca.pem` |
 | `registry_host` | In-cluster image registry hostname | No — constant for all OCP clusters |
 
-Three of the six fields are discovered from the running cluster. The other three are variables
+Two fields (`apps_domain` and `pod_cidr`) are discovered from the running cluster. The ingress CA is fetched and written to the file named by `ingress_ca_path`. The other three are variables
 with defaults suitable for CRC.
 
 ---
@@ -137,4 +137,4 @@ What would need verification on a second cluster:
 
 - That the OLM (Operator Lifecycle Manager) is present and the VSO Subscription installs.
 - That the in-cluster image registry is reachable at `image-registry.openshift-image-registry.svc:5000`.
-- That the ingress CA extraction from `openshift-ingress-operator` works on the target version.
+- That the ingress CA fetch from ConfigMap `default-ingress-cert` in `openshift-config-managed` works on the target version.

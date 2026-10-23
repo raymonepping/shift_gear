@@ -7,6 +7,7 @@ set -euo pipefail
 
 # shellcheck source=scripts/common.sh
 source "$(dirname "$0")/common.sh"
+sg_lock "$@"
 
 INFRA_JSON="${ROOT_DIR}/.build/terraform/infra.json"
 if [[ ! -f "$INFRA_JSON" ]]; then
@@ -32,7 +33,8 @@ VAULT_CACERT="$VAULT_CACERT" \
 VAULT_TOKEN="$VAULT_TOKEN" \
 VAULT_NAMESPACE="shift-gear" \
 vault kv patch \
-  -mount="shift-gear/kv" \
+  -mount="kv" \
+  -method=rw \
   "shift-gear/config/app-config" \
   rotated_at="${TIMESTAMP}"
 

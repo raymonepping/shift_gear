@@ -7,7 +7,7 @@ import { BASE, pageAs } from './auth'
 
 const ROUTES = [
   '/', '/layers', '/engines', '/pods', '/routes',
-  '/operator', '/ansible', '/agent', '/audit', '/cluster',
+  '/operator', '/ansible', '/agent', '/audit', '/cluster', '/help', '/explorer', '/observability',
 ]
 const VIEWPORTS = [
   { width: 1440, height: 900 },
@@ -29,7 +29,7 @@ for (const vp of VIEWPORTS) {
     const tag = `${vp.width}px${reducedMotion === 'reduce' ? ' reduced-motion' : ''}`
 
     test(`sign-in page — ${tag}`, async ({ browser }) => {
-      const context = await browser.newContext({ viewport: vp, reducedMotion, ignoreHTTPSErrors: true })
+      const context = await browser.newContext({ viewport: vp, reducedMotion })
       const page = await context.newPage()
       await page.goto(`${BASE}/signin`)
       await scan(page, '/signin')

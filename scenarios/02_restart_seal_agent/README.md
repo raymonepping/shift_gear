@@ -7,7 +7,7 @@
 ```bash
 oc -n sg-vault-seal delete pod -l app.kubernetes.io/name=seal-agent --grace-period=0
 oc -n sg-vault-seal get pods -w           # watch agent pod restart
-curl -sk https://vault.<apps_domain>/v1/sys/health | jq .sealed   # still false
+curl --cacert .secrets/tls/pub/ca.pem https://vault.<apps_domain>/v1/sys/health | jq .sealed   # still false
 ```
 
 ## How to run
@@ -27,4 +27,8 @@ bash scenarios/02_restart_seal_agent/run.sh
 
 ## Why this works
 
-The main Vault cluster stores the transit-seal wrapping key internally — it does not need to contact the seal agent for every request.  The seal agent is only called when a pod restarts (to unseal it).  The running cluster pods remain sealed-state-false throughout.  When the agent pod restarts it re-authenticates to the seal Vault via AppRole auto-auth and presents a fresh transit-encrypt token.
+The running Vault cluster does not need the transit seal for every request.
+During unseal it contacts the seal Vault through the agent proxy.  The running cluster pods remain sealed-state-false throughout.  When the agent pod restarts it re-authenticates to the seal Vault via AppRole auto-auth and presents a fresh transit-encrypt token.
+
+The script requires a replacement pod UID with Ready=True, so the old
+Deployment Available condition cannot make the restart check pass early.

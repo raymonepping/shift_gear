@@ -28,7 +28,7 @@ test('finn can see fleet (auditor role)', async ({ browser }) => {
 })
 
 test('unauthenticated user is redirected to sign-in', async ({ browser }) => {
-  const context = await browser.newContext({ ignoreHTTPSErrors: true })
+  const context = await browser.newContext({})
   const page = await context.newPage()
   await page.goto('/')
   await expect(page).toHaveURL(/\/signin/)

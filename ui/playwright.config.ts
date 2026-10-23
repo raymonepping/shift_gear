@@ -1,9 +1,10 @@
 import { defineConfig, devices } from '@playwright/test'
 
-// Runs against an already-running Shift Gear UI (make ui-dev or make ui-start).
-// TLS is verified elsewhere; tests focus on UI behaviour and a11y.
+// Runs against the deployed console through scripts/ui-test.sh.
+// Browser contexts verify TLS using the host’s trusted certificate authorities.
 export default defineConfig({
   testDir: 'tests',
+  workers: 1, // provider logout deliberately invalidates all sessions of that subject
   timeout: 90_000,
   reporter: process.env.CI ? 'github' : 'list',
   fullyParallel: false, // tests share a signed-in session; serialise within project
@@ -11,7 +12,6 @@ export default defineConfig({
 
   use: {
     baseURL: process.env.SG_UI_URL || 'http://127.0.0.1:3400',
-    ignoreHTTPSErrors: true,
     screenshot: 'only-on-failure',
     video: 'off',
   },
