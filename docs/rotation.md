@@ -396,8 +396,9 @@ One recorded sequence, 2026-10-29, all 14 steps green
 [operations](operations.md#kv-rotation-add-on)):
 
 1. Both add-ons removed; `make lab` twice: the core converged, second run
-   clean; verify, boundary 19/19, secret scan and `ui-test` (157 passed, the
-   15 installed-only specs skipped, the not-installed spec ran).
+   clean; verify, boundary 19/19, secret scan and `ui-test` (157 passed, 15
+   skipped: the 12 installed-only tests and 3 that always skip; the
+   not-installed spec ran).
 2. `rotation-up` 86.4 s; a second one changed nothing.
 3. Three minutes later `api-key/demo` had gone v811 → v814 on time triggers.
    `REVEAL=1` showed 20 values, all distinct, each matching the fingerprint
