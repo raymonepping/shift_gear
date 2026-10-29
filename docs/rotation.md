@@ -389,6 +389,37 @@ always 1, so process identity is checked by start time.
 
 ![Secure Door board](screenshots/secure-door-desktop.png)
 
+## Proof run (prompt 03_01)
+
+One recorded sequence, 2026-10-29, all 14 steps green
+(`.build/addons/rotation/proof-run.json`; times in
+[operations](operations.md#kv-rotation-add-on)):
+
+1. Both add-ons removed; `make lab` twice: the core converged, second run
+   clean; verify, boundary 19/19, secret scan and `ui-test` (157 passed, the
+   15 installed-only specs skipped, the not-installed spec ran).
+2. `rotation-up` 86.4 s; a second one changed nothing.
+3. Three minutes later `api-key/demo` had gone v811 → v814 on time triggers.
+   `REVEAL=1` showed 20 values, all distinct, each matching the fingerprint
+   recorded for its version (checked in memory; nothing stored).
+4. `rotation-test` 13/13, the Secure Door suite 10/10, report 3/3 compliant.
+5. `make lab` twice with the add-ons installed: second run clean.
+6. `make down && make up`: both add-ons came back; history continued without
+   a gap; compliant after two loops. `ui-test` 169 passed; `ui-screens`.
+7. `rotation-down` printed the kept secrets and a clean core drift check;
+   drift, verify, boundary, secret scan and `ui-test` green again.
+8. With the add-on removed and the secrets past `max_age`, the report said
+   `controller: not installed`, `compliant: 1/3`, `overdue: age 920s >
+   max_age 300s`, and exited non-zero.
+9. `rotation-up` again: rotation resumed (v857 → v859), no version gaps.
+
+The runs before this one stopped for reasons outside the add-on, each
+recorded in the prompt's execution log: an OpenShift Multus credential that
+went stale after seven days, a deleted CRC bundle cache that broke `crc
+status` (and with it `make down`'s preflight), and `make up`'s `rollout
+restart` of `agent-demo`, which `make drift` reported. The last one is fixed
+in `scripts/down.sh`.
+
 ## Signing in to the Vault UI (for checking history by hand)
 
 `https://vault.<apps_domain>` → **Namespace `shift-gear`** → method **LDAP**

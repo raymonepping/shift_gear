@@ -110,8 +110,10 @@ up)
   info "Scaling sg-app up"
   oc -n sg-app scale deployment --all --replicas 1
   # Init auth can retain a five-minute backoff from the sealed interval.
+  # Delete the pod instead of `rollout restart`: the Deployment is Terraform's,
+  # and a restartedAt annotation on its template is drift.
   if [[ "$(oc -n sg-app get deployment agent-demo -o jsonpath='{.status.availableReplicas}')" != 1 ]]; then
-    oc -n sg-app rollout restart deployment/agent-demo
+    oc -n sg-app delete pod -l app.kubernetes.io/name=agent-demo --wait=false
   fi
   oc -n sg-app wait deployment --all --for=condition=Available --timeout=300s
 

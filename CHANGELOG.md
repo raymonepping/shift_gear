@@ -16,7 +16,11 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Enforcement by reconciliation and Vault ACL, and compliance reporting (`make rotation-report`, also correct while the controller is down).
 - Engines › Rotation in the console: version timeline with fingerprints, compliance, and Rotate now when Vault allows it.
 - Secure Door consumer and board (`make rotation-consumer-*`): a Vault Agent–fed app that hot-reloads rotated KV v2 values without restarting, with a fictional door and a Vault daylight glass board at `secure-door.<apps_domain>`. See [addons/rotation/consumer/README.md](addons/rotation/consumer/README.md).
-- `make rotation-test`: 11 live scenarios plus a leak check. `make rotation-validate` runs in CI. Scenario 10 shows the demo rotation.
+- `make rotation-test`: 13 live scenarios plus a leak check. `make rotation-validate` runs in CI. Scenario 10 shows the demo rotation.
+- Application-owned rotation: every managed secret declares `owner: application`; credentials owned by Vault or an external provider are refused, with the right alternative named.
+- Session signing key moved to a Vault Transit key (`transit/keys/session-signing`, ed25519, hourly native rotation) in the core `platform` root; the old KV secret is retired, not deleted. The console shows it under "Rotated natively by Vault".
+- Secure Door split into an independent verifier and client, each with its own identity, signed HMAC requests with replay protection, and strict or grace cut-over (`make rotation-consumer-up GRACE=0`). `make rotation-consumer-test`: 10 live scenarios plus a leak check.
+- Recorded proof run of the add-on lifecycle (add, use, remove, re-add) with measured times in [docs/operations.md](docs/operations.md).
 
 - Live seal-chain observation shared by the topbar and Fleet/Cluster diagrams: bounded TLS-verified member health, named Agent readiness, 15-second foreground polling, 30-second expiry and fail-closed status; no telemetry dependency or additional Vault credential. See [validation](docs/seal-chain-observation.md).
 
@@ -41,6 +45,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - PRD, MoSCoW roadmap, ownership/session/credential runbooks and expanded article draft `article/06.md`.
 
 ### Fixed
+
+- `make up` no longer leaves Terraform drift on `agent-demo`: it deletes the pod instead of `rollout restart` when the init auth is still backing off.
 
 - Expired bootstrap tokens whose lookup returned HTTP 200: TTL/renewability now determine replacement, with old accessors retired after replacements are persisted.
 - OpenShift-owned registry references on the observer ServiceAccount, bounded to the declared controller-owned fields.

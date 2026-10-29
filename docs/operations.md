@@ -216,10 +216,27 @@ without touching the 13 phases ([rotation](rotation.md)). With it installed:
 After a long pause, run `make up` first: `rotation-up` refuses expired
 platform bootstrap tokens instead of refreshing them.
 
-Measured on 2026-10-28:
-- cold `rotation-up`: about 90 s (it waits to observe one 60 s rotation);
-- `rotation-down` + `rotation-up` cycle: about 140 s (s09);
-- full `rotation-test`: about 7–8 min.
+Measured in the recorded proof run of 2026-10-29 (prompt 03_01, all 14 steps
+green; `.build/addons/rotation/proof-run.json`):
+- `rotation-up` from removed: 86.4 s, and 86.0 s after a removal with overdue
+  secrets (it waits to observe one 60 s rotation);
+- a second `rotation-up`: 57.9 s, Terraform `No changes`, Ansible `changed=0`;
+- `rotation-down`: 51.3 s (17 resources destroyed; it prints the kept
+  secrets and a core drift check);
+- `rotation-test`: 8.5 min (13 of 13 plus the leak check);
+- Secure Door: `rotation-consumer-up` 12.7 s on a converged lab,
+  `rotation-consumer-test` 6.8 min (10 of 10 plus the leak check);
+- `make lab` with the add-on installed: 7.0 and 6.4 min, second run clean;
+  without it: 6.4 and 5.7 min;
+- `make down` 8.1 s, `make up` 4.3 min; both add-ons came back and
+  `api-key/demo` continued v841 → v842 with no gap in its history;
+- `make ui-test`: 10.7 min without the add-on (157 passed, 15 skipped),
+  12.2 min with it (169 passed, 3 skipped).
+
+`make up` restarts `agent-demo` when its init auth is still backing off from
+the sealed interval. It deletes the pod instead of `rollout restart`: the
+Deployment belongs to Terraform, and a `restartedAt` annotation on its
+template was reported as drift by `make drift` (found by the 03_01 run).
 
 ---
 
