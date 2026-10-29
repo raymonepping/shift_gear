@@ -1,0 +1,65 @@
+/* board.css — Secure Door board layout. Tokens and primitives come from
+ * tokens.css (generated from the console's main.css): Vault daylight glass,
+ * one dark ink hero, strong semantic status colours. */
+body { min-height: 100%; padding: 16px; }
+.board { max-width: 1120px; margin: 0 auto; }
+.board-top {
+  max-width: 1120px; margin: 0 auto 16px; padding: 10px 16px;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+}
+.brand { font-weight: 720; letter-spacing: -0.01em; }
+.conn { font-size: 12px; font-weight: 650; padding: 2px 10px; border-radius: 100px; color: var(--vg-text-secondary); background: var(--vg-bg-neutral); }
+.conn[data-state="live"] { color: var(--vg-healthy); background: var(--vg-healthy-bg); }
+.conn[data-state="lost"] { color: var(--vg-critical); background: var(--vg-critical-bg); }
+
+/* The hero: the door. State colours are the ink island's tokens. */
+.door h1 { margin: 4px 0 6px; font-size: clamp(30px, 6vw, 52px); font-weight: 800; letter-spacing: -0.03em; line-height: 1.05; }
+.door[data-state="granted"] h1 { color: var(--vg-healthy); }
+.door[data-state="denied"] h1 { color: var(--vg-critical); }
+.door[data-state="stale"] h1 { color: var(--vg-pending); }
+.door[data-state="unknown"] h1 { color: var(--vg-text-secondary); }
+.door-meta { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0 0 12px; color: var(--vg-text-secondary); font-size: 14px; }
+.door-meta strong { color: var(--vg-text-primary); font-size: 18px; }
+.door-honesty {
+  margin: 0 0 10px; padding: 10px 12px; border-radius: 9px; max-width: 760px;
+  background: var(--vg-well); border: 1px solid var(--vg-border-subtle);
+  color: var(--vg-text-secondary); font-size: 13px;
+}
+.door-honesty strong { color: var(--vg-text-primary); }
+.mono { font-family: var(--font-mono); }
+
+.signals { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); gap: 12px; margin: 0; }
+.signal { padding: 12px 14px; border-radius: var(--vg-radius); background: var(--vg-well); border: 1px solid var(--vg-border-subtle); }
+.signal dt { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--vg-text-muted); }
+.signal dt small { text-transform: none; letter-spacing: 0; font-weight: 600; }
+.signal dd { margin: 4px 0 0; font-size: 13px; color: var(--vg-text-primary); }
+.signal dd[data-tone="good"] { color: var(--vg-healthy); }
+.signal dd[data-tone="bad"] { color: var(--vg-critical); }
+
+.timeline { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.timeline li { padding: 8px 12px; border-radius: 9px; background: var(--vg-well); border: 1px solid var(--vg-border-subtle); }
+.rot-head { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+.rot-head strong { font-size: 15px; }
+.verdicts { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.rot-times { margin: 2px 0 0; font-size: 12px; color: var(--vg-text-secondary); font-variant-numeric: tabular-nums; }
+.dim { color: var(--vg-text-dim); font-size: 12.5px; }
+code { font-family: var(--font-mono); font-size: 0.92em; }
+
+.log {
+  max-height: 320px; overflow: auto; padding: 10px 12px; border-radius: 9px;
+  background: var(--vg-well); border: 1px solid var(--vg-border-subtle);
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.55;
+}
+.log .line { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--vg-text-secondary); }
+.log .lvl-warn { color: var(--vg-pending); }
+.log .lvl-error { color: var(--vg-critical); }
+
+.proves { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 16px; }
+.proves h3 { margin: 0 0 4px; font-size: 13px; }
+.proves ul { margin: 0; padding-left: 18px; color: var(--vg-text-secondary); font-size: 13px; }
+.panel h2 { margin: 0 0 10px; font-size: 16px; }
+
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  .vg-hero { padding: 20px 18px 18px; }
+}

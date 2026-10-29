@@ -1,0 +1,12 @@
+---
+# addons/rotation/consumer/ansible/consumer-down.yml — Secure Door consumer (down).
+- name: Secure Door consumer — down
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files: [vars.yml]
+  pre_tasks:
+    - name: Preamble
+      ansible.builtin.import_tasks: tasks/preamble.yml
+  roles:
+    - sg_rotation_consumer_unconfigure

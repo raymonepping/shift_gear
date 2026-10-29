@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # scripts/tf-run.sh — Run Terraform for one root with the project environment.
 #
-#   scripts/tf-run.sh <infra|foundation|workloads|seal|platform> <init|plan|apply|drift|test|output> [args...]
+#   scripts/tf-run.sh <infra|foundation|workloads|seal|platform|rotation> <init|plan|apply|drift|test|output|destroy|destroy-auto> [args...]
+#
+# - `rotation` is the removable KV rotation add-on (addons/rotation/terraform,
+#   ADR D17); `rotation-<part>` is one of its sub-roots
+#   (addons/rotation/<part>/terraform, e.g. rotation-consumer). None of them is
+#   in phases.txt; all use the tf-platform token.
 #
 # - VAULT_NAMESPACE is always unset before any run (lesson 16: double-prefix bug).
 # - Vault provider credentials come only from .secrets/tokens/tf-<root>.
@@ -24,8 +29,12 @@ root="${1:?usage: tf-run.sh <root> <action> [args...]}"
 action="${2:?usage: tf-run.sh <root> <action> [args...]}"
 shift 2
 
-dir="${TF_DIR}/${root}"
-[[ -d "${dir}" ]] || die "Unknown Terraform root: ${root} (expected: infra, foundation, workloads, seal, platform)"
+case "${root}" in
+rotation) dir="${ROOT_DIR}/addons/rotation/terraform" ;;
+rotation-*) dir="${ROOT_DIR}/addons/rotation/${root#rotation-}/terraform" ;;
+*) dir="${TF_DIR}/${root}" ;;
+esac
+[[ -d "${dir}" ]] || die "Unknown Terraform root: ${root} (expected: infra, foundation, workloads, seal, platform, rotation)"
 
 # Non-secret build outputs are explicit desired image inputs, never lifecycle exemptions.
 image_catalog="${SECRETS_DIR}/deployment-images.tfvars.json"
@@ -48,12 +57,14 @@ fi
 unset VAULT_NAMESPACE
 
 # ── Vault provider credentials ───────────────────────────────────────────────
-# Only seal and platform roots need a Vault token. The token is never passed
-# through TF_VAR_* and is never echoed.
+# Only seal, platform and the rotation add-on need a Vault token. The token is
+# never passed through TF_VAR_* and is never echoed. The add-on uses tf-platform.
 case "${root}" in
-seal | platform)
+seal | platform | rotation | rotation-*)
   if [[ "${action}" != "test" && "${action}" != "init" ]]; then
-    token_file="${SECRETS_DIR}/tokens/tf-${root}"
+    token_root="${root}"
+    [[ "${root}" == rotation* ]] && token_root=platform
+    token_file="${SECRETS_DIR}/tokens/tf-${token_root}"
     [[ -s "${token_file}" ]] || die "Missing ${token_file#"${ROOT_DIR}"/}: run the bootstrap phase first."
     # Vault address derived from the contract (.build/terraform/infra.json);
     # never a literal domain (lesson 19).
@@ -62,7 +73,7 @@ seal | platform)
     [[ -n "${apps_domain}" ]] || die "No apps_domain in ${infra_json#"${ROOT_DIR}"/}: run 'make infra' first."
     case "${root}" in
     seal)     export VAULT_ADDR="https://vault-seal.${apps_domain}" ;;
-    platform) export VAULT_ADDR="https://vault.${apps_domain}" ;;
+    platform | rotation | rotation-*) export VAULT_ADDR="https://vault.${apps_domain}" ;;
     esac
     _vault_token="$(<"${token_file}")"
     export VAULT_TOKEN="${_vault_token}"
@@ -81,7 +92,7 @@ secure_state() {
   find "${SECRETS_DIR}/terraform/${root}" -maxdepth 1 -type f \
     \( -name 'terraform.tfstate' -o -name 'terraform.tfstate.*' \) \
     -exec chmod 600 {} + 2>/dev/null || true
-  find "${TF_DIR}/${root}" -maxdepth 1 -type f \
+  find "${dir}" -maxdepth 1 -type f \
     \( -name 'terraform.tfstate' -o -name 'terraform.tfstate.*' \) \
     -exec chmod 600 {} + 2>/dev/null || true
 }
@@ -116,7 +127,7 @@ write_outputs() {
 # backend configuration changed (a stale .terraform/ is not enough).
 if [[ "${action}" != "init" ]]; then
   terraform -chdir="${dir}" init -input=false -lockfile=readonly >/dev/null ||
-    die "terraform init failed in terraform/${root}"
+    die "terraform init failed in ${dir#"${ROOT_DIR}"/}"
 fi
 
 # ── Dispatch ────────────────────────────────────────────────────────────────
@@ -155,6 +166,13 @@ apply)
 destroy)
   terraform -chdir="${dir}" destroy -input=false "$@"
   ;;
+destroy-auto)
+  # Non-interactive destroy, for the removable add-on only (make rotation-down).
+  [[ "${root}" == rotation || "${root}" == rotation-* ]] || die "destroy-auto is only allowed for the rotation add-on roots"
+  terraform -chdir="${dir}" destroy -input=false -auto-approve "$@"
+  record last_destroy success
+  rm -f "${BUILD_DIR}/terraform/${root}.json"
+  ;;
 output)
   terraform -chdir="${dir}" output "$@"
   ;;
@@ -183,6 +201,6 @@ drift)
   esac
   ;;
 *)
-  die "Unknown action: ${action} (expected: init, plan, apply, destroy, output, test, drift)"
+  die "Unknown action: ${action} (expected: init, plan, apply, destroy, destroy-auto, output, test, drift)"
   ;;
 esac

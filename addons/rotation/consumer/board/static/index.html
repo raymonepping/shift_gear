@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Secure Door · Shift Gear</title>
+  <link rel="stylesheet" href="/tokens.css">
+  <link rel="stylesheet" href="/board.css">
+  <script type="module" src="/board.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="board-top vg-glass">
+    <span class="brand">shift_gear · Secure Door</span>
+    <span class="conn" id="conn" role="status">connecting…</span>
+  </header>
+  <main id="main" class="board">
+    <section class="vg-hero door" aria-labelledby="door-title">
+      <p class="eyebrow">KV v2 rotation consumer · demo</p>
+      <h1 id="door-title"><span id="door-state">Waiting for the consumer…</span></h1>
+      <p class="door-meta">
+        <span>Credential <strong id="door-version">—</strong></span>
+        <span>fingerprint <span class="mono" id="door-fp">—</span></span>
+        <span id="door-secret" class="mono"></span>
+      </p>
+      <p class="door-honesty" id="door-honesty">
+        Fictional door. <strong>GRANTED</strong> means the app's cached credential matches Vault's latest
+        version; <strong>DENIED</strong> means it does not. No external service validates or revokes anything.
+        The Vault versions and the Agent reads are real.
+      </p>
+      <p class="hero-status" id="door-status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="panel vg-glass" aria-labelledby="health-title">
+      <div class="panel-head">
+        <div>
+          <h2 id="health-title">Health</h2>
+          <p>Three separate signals. Without evidence a signal says so — there is no single "healthy" light.</p>
+        </div>
+        <span class="source-tag">consumer status · /api/state</span>
+      </div>
+      <dl class="signals">
+        <div class="signal"><dt>Credential loaded</dt><dd id="sig-credential">unknown</dd></div>
+        <div class="signal"><dt>Last successful Vault refresh</dt><dd id="sig-refresh">unknown</dd></div>
+        <div class="signal"><dt>Vault connectivity <small>(reachability only)</small></dt><dd id="sig-vault">unknown</dd></div>
+      </dl>
+    </section>
+
+    <section class="panel vg-glass" aria-labelledby="latency-title">
+      <div class="panel-head">
+        <div>
+          <h2 id="latency-title">Latency — measured, not promised</h2>
+          <p>From this run's rotations. Configured intervals are listed for comparison only.</p>
+        </div>
+      </div>
+      <div class="vg-table-wrap" tabindex="0" role="region" aria-label="Latency table">
+        <table class="vg-table">
+          <thead><tr><th scope="col">Stage</th><th scope="col">Configured</th><th scope="col">Measured p50</th><th scope="col">Measured max</th><th scope="col">Samples</th></tr></thead>
+          <tbody id="latency-rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel vg-glass" aria-labelledby="timeline-title">
+      <div class="panel-head">
+        <div>
+          <h2 id="timeline-title">Rotation timeline</h2>
+          <p>Newest first. Each change: Vault created → Agent wrote the file → consumer reloaded, and the door's stale/fresh check.</p>
+        </div>
+      </div>
+      <ol class="timeline" id="timeline" aria-label="Rotations seen by the consumer"></ol>
+      <p class="dim" id="timeline-empty">No rotation seen yet. Run <code>make rotation-rotate SECRET=api-key/secure-door</code> or wait for the schedule.</p>
+    </section>
+
+    <section class="panel vg-glass" aria-labelledby="log-title">
+      <div class="panel-head">
+        <div><h2 id="log-title">Live log</h2><p>The consumer's last 200 lines. Values are never logged.</p></div>
+      </div>
+      <div class="log" id="log" tabindex="0" role="log" aria-label="Consumer log"></div>
+    </section>
+
+    <section class="panel vg-glass" aria-labelledby="proves-title">
+      <h2 id="proves-title">What this proves — and what it does not</h2>
+      <div class="proves">
+        <div><h3>Proves</h3><ul>
+          <li>Vault KV v2 versions really change (the rotation add-on writes them).</li>
+          <li>A Vault Agent sidecar alone authenticates, reads and renders the latest version.</li>
+          <li>The running app notices, reloads without restarting, and stops using the old value.</li>
+        </ul></div>
+        <div><h3>Does not prove</h3><ul>
+          <li>Issuer-side rotation: no external system issued or revoked anything.</li>
+          <li>That a real service rejects the old credential: the door is fictional.</li>
+          <li>Vault authorisation from the connectivity row: it shows reachability only.</li>
+        </ul></div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

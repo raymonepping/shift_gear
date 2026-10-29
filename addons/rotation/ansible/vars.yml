@@ -1,0 +1,31 @@
+---
+# addons/rotation/ansible/vars.yml — shared, non-secret settings for the add-on playbooks.
+# Loaded with vars_files; the infra contract and the token are loaded in pre_tasks.
+sg_rotation_root: "{{ playbook_dir }}/../../.."
+sg_rotation_vault_addr: "https://vault.{{ infra_cluster.apps_domain }}"
+sg_rotation_vault_ca: "{{ sg_rotation_root }}/.secrets/tls/pub/ca.pem"
+sg_rotation_vault_namespace: shift-gear
+sg_rotation_k8s_namespace: sg-rotation
+sg_rotation_k8s_auth_mount: kubernetes
+sg_rotation_build_dir: "{{ sg_rotation_root }}/.build/addons/rotation"
+sg_rotation_config: "{{ lookup('file', sg_rotation_root ~ '/addons/rotation/rotation.yaml') | from_yaml }}"
+sg_rotation_prefix: "{{ sg_rotation_config.rotation.prefix }}"
+sg_rotation_mount: "{{ sg_rotation_config.rotation.mount | default('kv') }}"
+
+# The controller's Kubernetes auth role (one policy, declared in full — lesson 4).
+sg_rotation_k8s_role:
+  bound_service_account_names: ["rotation-controller"]
+  bound_service_account_namespaces: ["sg-rotation"]
+  policies: ["sg-rotation-controller"]
+  token_ttl: 1200
+  token_max_ttl: 3600
+
+# Internal groups whose members are the existing per-mount external groups
+# (oidc-, ldap-, jwt-). Members inherit the parent group's policy (ASSESSMENT P4).
+sg_rotation_groups:
+  sg-rotation-operators:
+    policies: ["sg-rotation-operator"]
+    members: ["oidc-operators", "ldap-operators", "jwt-operators"]
+  sg-rotation-auditors:
+    policies: ["sg-rotation-auditor"]
+    members: ["oidc-auditors", "ldap-auditors", "jwt-auditors"]

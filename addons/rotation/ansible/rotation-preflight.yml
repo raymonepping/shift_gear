@@ -1,0 +1,13 @@
+---
+# addons/rotation/ansible/rotation-preflight.yml — refuse to install on a lab
+# that is not ready (expired bootstrap tokens, Vault down). Changes nothing.
+- name: KV rotation add-on — preflight
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files: [vars.yml]
+  pre_tasks:
+    - name: Preamble
+      ansible.builtin.import_tasks: tasks/preamble.yml
+  roles:
+    - sg_rotation_preflight

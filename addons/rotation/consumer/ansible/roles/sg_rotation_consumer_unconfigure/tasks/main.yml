@@ -1,0 +1,26 @@
+---
+# Remove only the consumer's auth role. The watched secret, its versions and
+# its history stay; the rotation controller keeps rotating it.
+- name: Remove the Secure Door's Kubernetes auth role
+  module_defaults:
+    ansible.builtin.uri:
+      ca_path: "{{ sg_rotation_consumer_vault_ca }}"
+      headers:
+        X-Vault-Token: "{{ sg_vault_token }}"
+        X-Vault-Namespace: "{{ sg_rotation_consumer_vault_namespace }}"
+  no_log: true
+  block:
+    - name: Read the role
+      ansible.builtin.uri:
+        url: "{{ sg_rotation_consumer_vault_addr }}/v1/auth/kubernetes/role/sg-rotation-consumer"
+        status_code: [200, 404]
+      check_mode: false
+      register: sg_rotation_consumer_unconfigure_role
+
+    - name: Delete the role
+      ansible.builtin.uri:
+        url: "{{ sg_rotation_consumer_vault_addr }}/v1/auth/kubernetes/role/sg-rotation-consumer"
+        method: DELETE
+        status_code: [200, 204]
+      changed_when: true
+      when: sg_rotation_consumer_unconfigure_role.status == 200

@@ -1,0 +1,10 @@
+---
+# Infra contract and the Ansible platform token (never printed).
+- name: Load the infra contract
+  ansible.builtin.set_fact:
+    infra_cluster: "{{ (lookup('file', playbook_dir ~ '/../../../../.build/terraform/infra.json') | from_json).cluster }}"
+
+- name: Load the sg-ansible-platform token
+  ansible.builtin.set_fact:
+    sg_vault_token: "{{ lookup('file', playbook_dir ~ '/../../../../.secrets/tokens/ansible-platform') | trim }}"
+  no_log: true

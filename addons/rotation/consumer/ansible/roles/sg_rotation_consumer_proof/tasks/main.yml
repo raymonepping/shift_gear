@@ -1,0 +1,69 @@
+---
+# Read-only proof. The consumer's own status is compared with Vault's metadata
+# (read with the Ansible token) — never trusted on its word alone. Values are
+# never read here: only versions.
+
+- name: Wait for the Secure Door rollout (all four containers ready)
+  ansible.builtin.command:
+    argv: [oc, -n, "{{ sg_rotation_consumer_k8s_namespace }}", rollout, status, deploy/secure-door, --timeout=180s]
+  changed_when: false
+  check_mode: false
+
+- name: Vault's current version of the watched secret
+  ansible.builtin.uri:
+    url: "{{ sg_rotation_consumer_vault_addr }}/v1/kv/metadata/{{ sg_rotation_consumer_secret_rel }}"
+    ca_path: "{{ sg_rotation_consumer_vault_ca }}"
+    headers:
+      X-Vault-Token: "{{ sg_vault_token }}"
+      X-Vault-Namespace: "{{ sg_rotation_consumer_vault_namespace }}"
+  register: sg_rotation_consumer_proof_meta
+  check_mode: false
+  no_log: true
+
+- name: The consumer loaded a version the Agent rendered, and reports current
+  ansible.builtin.command:
+    argv: [oc, -n, "{{ sg_rotation_consumer_k8s_namespace }}", exec, deploy/secure-door, -c, consumer, --,
+           python3, -c, "{{ sg_rotation_consumer_proof_read_status }}"]
+  register: sg_rotation_consumer_proof_status
+  changed_when: false
+  check_mode: false
+  retries: 30
+  delay: 3
+  until: >-
+    sg_rotation_consumer_proof_status.rc == 0 and
+    (sg_rotation_consumer_proof_status.stdout | from_json).state == 'current' and
+    ((sg_rotation_consumer_proof_status.stdout | from_json).version | int) >= (sg_rotation_consumer_proof_meta.json.data.current_version | int) - 1
+
+- name: The consumer container holds no Vault token and no Vault settings
+  ansible.builtin.command:
+    argv: [oc, -n, "{{ sg_rotation_consumer_k8s_namespace }}", exec, deploy/secure-door, -c, consumer, --,
+           python3, -c, "{{ sg_rotation_consumer_proof_isolation_check }}"]
+  register: sg_rotation_consumer_proof_isolation
+  changed_when: false
+  check_mode: false
+  failed_when: sg_rotation_consumer_proof_isolation.rc != 0 or sg_rotation_consumer_proof_isolation.stdout | trim != '0 0'
+
+- name: The board answers through its Route over verified TLS
+  ansible.builtin.uri:
+    url: "{{ sg_rotation_consumer_board_url }}/healthz"
+    ca_path: "{{ sg_rotation_consumer_ingress_ca }}"
+  register: sg_rotation_consumer_proof_board
+  retries: 20
+  delay: 3
+  until: sg_rotation_consumer_proof_board.status == 200
+  check_mode: false
+
+- name: Write the non-secret consumer evidence
+  ansible.builtin.copy:
+    dest: "{{ sg_rotation_consumer_build_dir }}/consumer-status.json"
+    mode: "0600"
+    content: >-
+      {{ {
+        'verified_at': now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        'vault_current_version': sg_rotation_consumer_proof_meta.json.data.current_version,
+        'consumer': sg_rotation_consumer_proof_status.stdout | from_json,
+        'consumer_has_token_or_vault_env': false,
+        'board_url': sg_rotation_consumer_board_url
+      } | to_nice_json }}
+  changed_when: false
+  when: not ansible_check_mode

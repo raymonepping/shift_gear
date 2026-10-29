@@ -75,8 +75,9 @@ substrate_violations=$(
     grep -rnE 'crc|vfkit|api\.crc\.testing|apps-crc\.testing' \
       "${TF_DIR}/foundation" "${TF_DIR}/workloads" "${TF_DIR}/seal" "${TF_DIR}/platform" \
       "${ROOT_DIR}/ansible" "${ROOT_DIR}/deploy" "${ROOT_DIR}/policies" \
+      "${ROOT_DIR}/addons" \
       --include='*.tf' --include='*.yml' --include='*.yaml' --include='*.hcl' \
-      --include='*.j2' --include='*.sh' --include='*.json' 2>/dev/null
+      --include='*.j2' --include='*.sh' --include='*.json' --include='*.py' 2>/dev/null
     grep -nE 'crc|vfkit|api\.crc\.testing|apps-crc\.testing' "${ROOT_DIR}"/scripts/*.sh 2>/dev/null |
       grep -v '/scripts/crc-[a-z-]*\.sh:' | grep -v '/scripts/check\.sh:'
   } | grep -v '\.terraform/' |

@@ -1,0 +1,38 @@
+---
+# Refuse early, with the fix in the message, instead of half-installing.
+- name: Vault is active and unsealed
+  ansible.builtin.uri:
+    url: "{{ sg_rotation_vault_addr }}/v1/sys/health"
+    ca_path: "{{ sg_rotation_vault_ca }}"
+    status_code: [200]
+  check_mode: false
+  changed_when: false
+
+- name: Both platform bootstrap tokens are live (periodic, 24 h)
+  ansible.builtin.uri:
+    url: "{{ sg_rotation_vault_addr }}/v1/auth/token/lookup-self"
+    ca_path: "{{ sg_rotation_vault_ca }}"
+    headers:
+      X-Vault-Token: "{{ lookup('file', sg_rotation_root ~ '/.secrets/tokens/' ~ item) | trim }}"
+    status_code: [200, 403]
+  loop: [ansible-platform, tf-platform]
+  register: sg_rotation_preflight_tokens
+  check_mode: false
+  changed_when: false
+  no_log: true
+
+- name: Fail with the fix when a bootstrap token has expired
+  ansible.builtin.assert:
+    that: sg_rotation_preflight_tokens.results | map(attribute='status') | unique == [200]
+    fail_msg: >-
+      A platform bootstrap token is no longer valid (they are periodic, 24 h, and lapse
+      while the lab is down). Run `make up` first; it re-issues them. Nothing was changed.
+    quiet: true
+
+- name: The managed prefix is not the root of a mount and does not overlap core seeds
+  ansible.builtin.assert:
+    that:
+      - sg_rotation_prefix is match('^[a-z0-9-]+(/[a-z0-9-]+)+$')
+      - not (sg_rotation_prefix is match('^shift-gear/(config|agent|identity|postgres)(/|$)'))
+    fail_msg: "rotation.prefix '{{ sg_rotation_prefix }}' must be a dedicated path, e.g. shift-gear/rotation."
+    quiet: true

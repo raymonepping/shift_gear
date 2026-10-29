@@ -106,13 +106,18 @@ Key targets:
 | `make drift` | Terraform plan + Ansible check-mode across all phases |
 | `make idempotency` | Re-run all Ansible phases; require `changed=0` |
 | `make boundary` | Prove tool boundary: 19 capabilities-self checks |
-| `make rotation-proof` | Rotate seal agent secret-id twice; prove previous ID absent/current lookup=200/count=1 |
+| `make rotation-proof` | Seal agent secret-id rotator: rotate twice; prove previous ID absent/current lookup=200/count=1 |
 | `make identity-verify` | Every persona logs in and receives exactly their policies |
 | `make wl-a-rotate` | Write new KV version; VSO syncs within ~30 s; workload-a rolls |
 | `make vso-status` | VSO CRD sync status and workload pod states |
 | `make trust` / `make untrust` | Add / remove the lab CA from the macOS System keychain |
 | `make down` / `make up` | Graceful scale-down / scale-up without losing PVCs |
 | `make reset`, then `make crc-reset && make lab` | Destructive fresh-VM rebuild after generated state is archived; approval required |
+| `make rotation-up` / `make rotation-down` | KV rotation add-on: install and prove it / remove it (secrets and history stay in Vault) |
+| `make rotation-status` / `rotation-report` | KV rotation add-on: every managed secret's version, fingerprint and compliance / compliance report |
+| `make rotation-history SECRET=… [REVEAL=1]` | KV rotation add-on: v1 → v2 → v3 with fingerprints and triggers (values only with REVEAL=1) |
+| `make rotation-rotate SECRET=…` / `rotation-read SECRET=…` | KV rotation add-on: request a rotation / one read for the usage demo |
+| `make rotation-validate` / `rotation-test` | KV rotation add-on: offline gate / live proof of every strategy, enforcement and compliance |
 
 ---
 
@@ -124,6 +129,20 @@ make vso-status           # watch VSO sync + workload-a rollout
 ```
 
 The workload pod reads the new value from the mounted Secret without a Vault token. VSO uses `rolloutRestartTargets` to restart workload-a after a source change.
+
+---
+
+## KV rotation add-on
+
+Vault KV v2 versions secrets but does not rotate them. A removable add-on rotates values inside Vault: per secret type, on a schedule, after a number of reads, or on request. It keeps every change as a KV v2 version with a recorded trigger, and reports compliance.
+
+```sh
+make rotation-up                              # install and prove it rotates
+make rotation-history SECRET=api-key/demo     # v1 -> v2 -> v3 with fingerprints and triggers
+make rotation-down                            # remove; secrets and history stay in Vault
+```
+
+Details: [docs/rotation.md](docs/rotation.md). In the console: **Engines › Rotation**.
 
 ---
 
@@ -177,7 +196,8 @@ https://github.com/raymonepping/shift_gear
 ## Console pages and scenarios
 
 The console has Sign-in, Fleet, Layers, Engines, Pods, Routes, Operator,
-Ansible, Agent, Audit and Cluster pages. Cluster, pod and VSO views read
+Ansible, Agent, Audit and Cluster pages, plus Engines › Rotation while the KV
+rotation add-on is installed. Cluster, pod and VSO views read
 snapshots published by `make ux`; the Audit page reads the collector live.
 
 | Scenario | Purpose |
@@ -191,6 +211,7 @@ snapshots published by `make ux`; the Audit page reads the collector live.
 | 07 | Revoke or replace the dynamic credential and check the old PostgreSQL role |
 | 08 | Four reversible drift mutations with detection and restoration checks |
 | 09 | Hand-edit a VSO-owned Secret; VSO restored the Vault value in 6 s |
+| 10 | KV rotation add-on: watch `api-key/demo` rotate v*N* → v*N*+2 inside Vault (skips when not installed) |
 
 Results and limitations belong in [Testing](docs/testing.md) and the roadmap
 execution log; the presence of a script does not mean its proof has passed.

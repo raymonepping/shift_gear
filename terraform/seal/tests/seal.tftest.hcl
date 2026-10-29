@@ -74,3 +74,17 @@ run "approle_roles_bound_to_pod_cidr" {
     error_message = "Rotator role must be named sg-seal-rotator"
   }
 }
+
+run "approle_lockout_is_bounded" {
+  command = plan
+
+  assert {
+    condition     = jsondecode(vault_generic_endpoint.approle_lockout.data_json).user_lockout_config.lockout_duration == "30s"
+    error_message = "AppRole lockout must be bounded to 30s (Vault default 15m outlasts a secret-id repair)"
+  }
+
+  assert {
+    condition     = jsondecode(vault_generic_endpoint.approle_lockout.data_json).user_lockout_config.lockout_threshold == "3"
+    error_message = "AppRole lockout threshold must be 3"
+  }
+}

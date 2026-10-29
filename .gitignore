@@ -246,5 +246,9 @@ playwright-report/
 .codex/
 .impeccable/
 /prompts/
+/input/
 # /tests/
 # /scenarios/
+# Secure Door board spec borrows ui/node_modules through a symlink (created by its test run)
+addons/rotation/consumer/tests/board/node_modules
+addons/rotation/consumer/tests/board/test-results/

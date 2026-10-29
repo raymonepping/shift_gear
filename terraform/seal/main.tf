@@ -57,6 +57,25 @@ resource "vault_auth_backend" "approle" {
   description = "Shift Gear seal agent"
 }
 
+# Lockout bounded (lesson 3): 3 failures in 30 s lock the role for 30 s.
+# Vault's default (5 failures → 15 min) outlasts an expired-secret-id repair:
+# the agent retries with the stale ID, locks the role, and the freshly minted
+# ID is refused until the lock lifts. The provider has no user_lockout_config
+# attribute, so this tunes the mount directly (sg-tf-seal may update the tune).
+resource "vault_generic_endpoint" "approle_lockout" {
+  path = "sys/mounts/auth/${vault_auth_backend.approle.path}/tune"
+  data_json = jsonencode({
+    user_lockout_config = {
+      lockout_threshold              = tostring(var.lockout_threshold)
+      lockout_duration               = var.lockout_duration
+      lockout_counter_reset_duration = var.lockout_duration
+    }
+  })
+  # The tune endpoint cannot be deleted and echoes types differently on read.
+  disable_read   = true
+  disable_delete = true
+}
+
 # The seal agent's identity: short token TTL, secret-id expires in 24 h,
 # both bound to the cluster pod CIDR. Lockout bounded (lesson 3).
 # pod_cidr is written in canonical form by the provider (D8).
@@ -76,8 +95,7 @@ resource "vault_approle_auth_backend_role" "autounseal" {
   secret_id_bound_cidrs = [local.pod_cidr]
   token_bound_cidrs     = [local.pod_cidr]
 
-  # Lockout: 3 failures in 30 s prevents brute-force while allowing transient
-  # restarts that may fail once before acquiring a valid secret-id.
+  # Lockout: see vault_generic_endpoint.approle_lockout (mount-level tune).
   token_num_uses = 0
 }
 

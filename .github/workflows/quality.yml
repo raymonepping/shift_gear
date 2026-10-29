@@ -32,6 +32,7 @@ jobs:
         run: |
           make check
           make must-test
+          make rotation-validate
           make ui-check
           SG_SCAN_MODE=offline ./scripts/secret-scan.sh
           git diff --check

@@ -43,6 +43,8 @@ export default defineNuxtConfig({
     metricsBackend: 'none',                                 // optional: none / opentelemetry / prometheus
     auditArchiveEnabled: false,                             // independent opt-in
     auditApiBase: '',                                       // NUXT_AUDIT_API_BASE — internal API server
+    // KV rotation add-on (ADR D17): cluster-internal Service; absent = not installed.
+    rotationControllerBase: 'http://rotation-controller.sg-rotation.svc:8080', // NUXT_ROTATION_CONTROLLER_BASE
     public: {
       refreshSeconds: 15,
       designSheet: 'false',  // NUXT_PUBLIC_DESIGN_SHEET=true enables /_design

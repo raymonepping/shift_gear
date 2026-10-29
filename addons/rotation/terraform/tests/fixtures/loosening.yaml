@@ -1,0 +1,11 @@
+# A secret override that loosens its type's max_age — must be refused at plan time.
+rotation:
+  mount: kv
+  prefix: shift-gear/rotation
+  types:
+    api-key:
+      generator: { kind: chars, charset: alnum, length: 32 }
+      schedule: { interval: 60s }
+      policy: { max_age: 5m, min_length: 32 }
+  secrets:
+    - { name: demo, type: api-key, strategies: [time], interval: 10m }

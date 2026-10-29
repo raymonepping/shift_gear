@@ -39,6 +39,12 @@ path "shift-gear/sys/policies/acl" {
   capabilities = ["list"]
 }
 
+# KV rotation add-on (ADR D18): its Sentinel EGP only. The name prefix keeps
+# every other endpoint-governing policy out of Terraform's reach.
+path "shift-gear/sys/policies/egp/sg-rotation-*" {
+  capabilities = ["create", "read", "update", "delete"]
+}
+
 path "shift-gear/sys/policies/acl/*" {
   capabilities = ["create", "read", "update", "delete", "list"]
 }

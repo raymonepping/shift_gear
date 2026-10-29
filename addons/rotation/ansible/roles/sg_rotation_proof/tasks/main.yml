@@ -1,0 +1,206 @@
+---
+# Read-only proof. Every assertion reads Vault's own data or the controller's
+# /status from inside its pod; any failure fails the play (no "echo PASS").
+
+- name: Wait for the controller pod to be Ready
+  kubernetes.core.k8s_info:
+    kind: Pod
+    namespace: "{{ sg_rotation_k8s_namespace }}"
+    label_selectors: ["app.kubernetes.io/name=rotation-controller"]
+    wait: true
+    wait_condition:
+      type: Ready
+      status: "True"
+    wait_timeout: 180
+  register: sg_rotation_proof_pods
+
+- name: Controller has authenticated and completed a loop
+  block:
+    - name: Read /status from inside the controller pod
+      ansible.builtin.command:
+        argv: [oc, -n, "{{ sg_rotation_k8s_namespace }}", exec, deploy/rotation-controller, -c, controller, --,
+               python3, -c, "import urllib.request,sys;sys.stdout.write(urllib.request.urlopen('http://127.0.0.1:8080/status',timeout=5).read().decode())"]
+      register: sg_rotation_proof_status_raw
+      changed_when: false
+      check_mode: false
+      retries: 12
+      delay: 5
+      until: >-
+        sg_rotation_proof_status_raw.rc == 0 and
+        ((sg_rotation_proof_status_raw.stdout | from_json).controller.identity | default('', true) | length) > 0 and
+        ((sg_rotation_proof_status_raw.stdout | from_json).controller.last_loop | default('', true) | length) > 0 and
+        ((sg_rotation_proof_status_raw.stdout | from_json).secrets | length) == (sg_rotation_config.rotation.secrets | length)
+  rescue:
+    # The agent backs off after failed logins (role created after the pod
+    # started); one fresh pod logs in at once.
+    - name: Restart the controller pod once (agent auth backoff)
+      ansible.builtin.command:
+        argv: [oc, -n, "{{ sg_rotation_k8s_namespace }}", delete, pod, -l, app.kubernetes.io/name=rotation-controller, --wait=true]
+      changed_when: true
+
+    - name: Read /status again after the restart
+      ansible.builtin.command:
+        argv: [oc, -n, "{{ sg_rotation_k8s_namespace }}", exec, deploy/rotation-controller, -c, controller, --,
+               python3, -c, "import urllib.request,sys;sys.stdout.write(urllib.request.urlopen('http://127.0.0.1:8080/status',timeout=5).read().decode())"]
+      register: sg_rotation_proof_status_raw
+      changed_when: false
+      check_mode: false
+      retries: 24
+      delay: 5
+      until: >-
+        sg_rotation_proof_status_raw.rc == 0 and
+        ((sg_rotation_proof_status_raw.stdout | from_json).controller.identity | default('', true) | length) > 0 and
+        ((sg_rotation_proof_status_raw.stdout | from_json).secrets | length) == (sg_rotation_config.rotation.secrets | length)
+
+- name: Keep the controller status
+  ansible.builtin.set_fact:
+    sg_rotation_proof_status: "{{ sg_rotation_proof_status_raw.stdout | from_json }}"
+
+- name: Read every managed secret's metadata from Vault
+  ansible.builtin.uri:
+    url: "{{ sg_rotation_vault_addr }}/v1/{{ sg_rotation_mount }}/metadata/{{ sg_rotation_prefix }}/{{ item.type }}/{{ item.name }}"
+    ca_path: "{{ sg_rotation_vault_ca }}"
+    headers:
+      X-Vault-Token: "{{ sg_vault_token }}"
+      X-Vault-Namespace: "{{ sg_rotation_vault_namespace }}"
+  loop: "{{ sg_rotation_config.rotation.secrets }}"
+  loop_control:
+    label: "{{ item.type }}/{{ item.name }}"
+  register: sg_rotation_proof_meta
+  check_mode: false
+  no_log: true
+
+- name: Every secret is onboarded, enforced and has a history record
+  ansible.builtin.assert:
+    that:
+      - item.json.data.current_version | int >= 1
+      - item.json.data.cas_required | bool
+      - item.json.data.max_versions | int == sg_rotation_config.rotation.defaults.max_versions | int
+      - item.json.data.custom_metadata.rotation_managed_by == 'kv-rotation-controller'
+      - ('v' ~ item.json.data.current_version) in item.json.data.custom_metadata
+    fail_msg: "{{ item.item.type }}/{{ item.item.name }} is not onboarded or not enforced"
+    quiet: true
+  loop: "{{ sg_rotation_proof_meta.results }}"
+  loop_control:
+    label: "{{ item.item.type }}/{{ item.item.name }}"
+
+- name: Pick the fastest time-based secret
+  ansible.builtin.set_fact:
+    sg_rotation_proof_fast: >-
+      {{ (sg_rotation_proof_status.config.secrets | selectattr('strategies', 'contains', 'time')
+          | sort(attribute='interval_seconds') | first) }}
+
+- name: Observe one rotation of the fastest secret
+  ansible.builtin.uri:
+    url: "{{ sg_rotation_vault_addr }}/v1/{{ sg_rotation_mount }}/metadata/{{ sg_rotation_prefix }}/{{ sg_rotation_proof_fast.id }}"
+    ca_path: "{{ sg_rotation_vault_ca }}"
+    headers:
+      X-Vault-Token: "{{ sg_vault_token }}"
+      X-Vault-Namespace: "{{ sg_rotation_vault_namespace }}"
+  register: sg_rotation_proof_observe
+  check_mode: false
+  no_log: true
+  vars:
+    sg_rotation_proof_start: >-
+      {{ (sg_rotation_proof_meta.results | selectattr('item.name', 'equalto', sg_rotation_proof_fast.id.split('/')[1])
+          | first).json.data.current_version | int }}
+  retries: "{{ ((sg_rotation_proof_fast.interval_seconds | int + 2 * sg_rotation_config.rotation.loop_seconds | int) / 5) | round(0, 'ceil') | int + 2 }}"
+  delay: 5
+  until: sg_rotation_proof_observe.json.data.current_version | int > sg_rotation_proof_start | int
+  when: not ansible_check_mode
+
+- name: Inheritance proof — read the persona passwords
+  ansible.builtin.uri:
+    url: "{{ sg_rotation_vault_addr }}/v1/kv/data/shift-gear/identity"
+    ca_path: "{{ sg_rotation_vault_ca }}"
+    headers:
+      X-Vault-Token: "{{ sg_vault_token }}"
+      X-Vault-Namespace: "{{ sg_rotation_vault_namespace }}"
+  register: sg_rotation_proof_identity
+  check_mode: false
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Inheritance proof — sign in as the operator and the outsider (LDAP)
+  ansible.builtin.uri:
+    url: "{{ sg_rotation_vault_addr }}/v1/auth/ldap/login/{{ item }}"
+    method: POST
+    ca_path: "{{ sg_rotation_vault_ca }}"
+    headers:
+      X-Vault-Namespace: "{{ sg_rotation_vault_namespace }}"
+    body_format: json
+    body:
+      password: "{{ sg_rotation_proof_identity.json.data.data['user_' ~ item] }}"
+  loop: ["{{ sg_rotation_proof_operator }}", "{{ sg_rotation_proof_outsider }}"]
+  register: sg_rotation_proof_logins
+  check_mode: false
+  changed_when: false
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Inheritance proof — capabilities on managed metadata
+  ansible.builtin.uri:
+    url: "{{ sg_rotation_vault_addr }}/v1/sys/capabilities-self"
+    method: POST
+    ca_path: "{{ sg_rotation_vault_ca }}"
+    headers:
+      X-Vault-Token: "{{ item.json.auth.client_token }}"
+      X-Vault-Namespace: "{{ sg_rotation_vault_namespace }}"
+    body_format: json
+    body:
+      paths: ["{{ sg_rotation_proof_probe_path }}"]
+  loop: "{{ sg_rotation_proof_logins.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  register: sg_rotation_proof_caps
+  check_mode: false
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Inheritance proof — revoke the persona tokens
+  ansible.builtin.uri:
+    url: "{{ sg_rotation_vault_addr }}/v1/auth/token/revoke-self"
+    method: POST
+    ca_path: "{{ sg_rotation_vault_ca }}"
+    headers:
+      X-Vault-Token: "{{ item.json.auth.client_token }}"
+      X-Vault-Namespace: "{{ sg_rotation_vault_namespace }}"
+    status_code: [200, 204]
+  loop: "{{ sg_rotation_proof_logins.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  check_mode: false
+  changed_when: false
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Operators may request (patch); staff may not
+  ansible.builtin.assert:
+    that:
+      - "'patch' in sg_rotation_proof_caps.results[0].json.data[sg_rotation_proof_probe_path]"
+      - "'patch' not in sg_rotation_proof_caps.results[1].json.data[sg_rotation_proof_probe_path]"
+    fail_msg: >-
+      Policy inheritance through the internal group sg-rotation-operators did not
+      reach {{ sg_rotation_proof_operator }} (or reached {{ sg_rotation_proof_outsider }}).
+      Apply the ASSESSMENT fallback.
+    quiet: true
+  when: not ansible_check_mode
+
+- name: Write the non-secret status evidence
+  ansible.builtin.copy:
+    dest: "{{ sg_rotation_build_dir }}/status.json"
+    mode: "0600"
+    content: >-
+      {{ {
+        'verified_at': now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        'controller': {
+          'identity': sg_rotation_proof_status.controller.identity,
+          'events': sg_rotation_proof_status.controller.events,
+          'usage': sg_rotation_proof_status.controller.usage,
+          'loop_seconds': sg_rotation_proof_status.controller.loop_seconds
+        },
+        'secrets': sg_rotation_proof_status.secrets | map(attribute='secret') | list,
+        'inheritance': 'proven' if not ansible_check_mode else 'not run (check mode)'
+      } | to_nice_json }}
+  changed_when: false
+  when: not ansible_check_mode

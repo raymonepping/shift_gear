@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import type { EnginesResponse } from '../../shared/types'
+import type { EnginesResponse } from '../../../shared/types'
 
 useHead({ title: 'Engines · Shift Gear' })
 definePageMeta({ middleware: ['auth'] })
 
 const { data, status, refresh, error } = await useFetch<EnginesResponse>('/api/v1/engines', { server: false, lazy: true })
 const checking = computed(() => status.value === 'pending')
+const { features, load: loadFeatures } = useFeatures()
+onMounted(() => loadFeatures())
 
 let timer: ReturnType<typeof setInterval> | undefined
 onMounted(() => { timer = setInterval(() => refresh(), 30_000) })
@@ -58,6 +60,11 @@ function isEnterprise(type: string): boolean {
     </section>
 
     <SourceState :status="status" :has-data="!!data" :code="error?.statusCode" label="Engine observations" @retry="refresh()" />
+
+    <p v-if="features" class="addon-line">
+      <template v-if="features.rotation === 'not-installed'">KV rotation add-on: not installed (<code>make rotation-up</code>). Rotation history stays in Vault either way.</template>
+      <template v-else>KV rotation add-on: {{ features.rotation }} · <NuxtLink to="/engines/rotation">Rotation</NuxtLink></template>
+    </p>
 
     <section v-if="data" class="panel vg-glass" aria-label="PKI and Transit proof">
       <h2>PKI and Transit lifecycle proof</h2>
@@ -123,6 +130,8 @@ function isEnterprise(type: string): boolean {
 </template>
 
 <style scoped>
+.addon-line { margin: 0 0 14px; color: var(--vg-text-dim); font-size: 13px; }
+.addon-line code { font-family: var(--font-mono); }
 .engine-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr)); gap: 14px; }
 .engine-card { min-width: 0; overflow-wrap: anywhere; padding: 16px 18px; display: flex; flex-direction: column; gap: 8px; }
 .engine-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

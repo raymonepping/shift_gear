@@ -202,6 +202,27 @@ configuration work use their scoped tokens.
 
 ---
 
+## KV rotation add-on
+
+`make rotation-up` / `make rotation-down` install and remove the add-on
+without touching the 13 phases ([rotation](rotation.md)). With it installed:
+
+- `make down` scales `sg-rotation` to 0 before Vault;
+- `make up` scales it back after `sg-app`;
+- `make reset` deletes `sg-rotation`;
+- `make lab` leaves it alone. A `make lab` run with the add-on installed was
+  idempotent with every plan empty (2026-10-28).
+
+After a long pause, run `make up` first: `rotation-up` refuses expired
+platform bootstrap tokens instead of refreshing them.
+
+Measured on 2026-10-28:
+- cold `rotation-up`: about 90 s (it waits to observe one 60 s rotation);
+- `rotation-down` + `rotation-up` cycle: about 140 s (s09);
+- full `rotation-test`: about 7–8 min.
+
+---
+
 ## Adding a phase
 
 1. Add a line to `scripts/phases.txt`: `tf <root>` or `ansible <playbook>`.

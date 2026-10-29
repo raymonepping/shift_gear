@@ -1,0 +1,14 @@
+---
+# addons/rotation/ansible/rotation-down.yml — remove the add-on's Vault
+# configuration after Terraform destroyed its objects. Never touches a managed
+# secret, its versions or its history.
+- name: KV rotation add-on — unconfigure Vault
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files: [vars.yml]
+  pre_tasks:
+    - name: Preamble
+      ansible.builtin.import_tasks: tasks/preamble.yml
+  roles:
+    - sg_rotation_unconfigure

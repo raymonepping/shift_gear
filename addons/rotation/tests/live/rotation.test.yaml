@@ -1,0 +1,70 @@
+# addons/rotation/tests/live/rotation.test.yaml — rotation-test overlay (generated
+# from rotation.yaml by hand; keep the demo part in sync). The demo secrets stay
+# managed; three rt-* test secrets with a 20 s cadence and a 5 s loop make every
+# scenario finish in seconds. `make rotation-up` restores the normal config.
+rotation:
+  mount: kv
+  prefix: shift-gear/rotation
+  loop_seconds: 5
+  defaults:
+    max_versions: 20
+
+  types:
+    test-key:
+      generator: { kind: chars, charset: alnum, length: 32 }
+      schedule: { interval: 20s }
+      policy: { max_age: 45s, min_length: 32, max_reads: 3 }
+    # Slow schedule, so usage and event rotations in the tests are never
+    # confused with a time rotation.
+    test-slow:
+      generator: { kind: chars, charset: alnum, length: 32 }
+      schedule: { interval: 10m }
+      policy: { max_age: 15m, min_length: 32, max_reads: 3 }
+
+    api-key:
+      generator: { kind: chars, charset: alnum, length: 32 }
+      schedule: { interval: 60s }
+      policy: { max_age: 5m, min_length: 32, max_reads: 5 }
+
+    signing-key:
+      generator: { kind: bytes, bytes: 48, encoding: base64url }
+      schedule: { interval: 5m }
+      policy: { max_age: 15m, min_length: 64 }
+
+    service-password:
+      generator: { kind: password, length: 24, classes: [lower, upper, digit, symbol] }
+      schedule: { interval: 10m }
+      policy: { max_age: 30m, min_length: 20 }
+
+  secrets:
+    # Time + usage + human request: the general-purpose demo secret.
+    - name: demo
+      type: api-key
+      strategies: [time, usage, event]
+      usage: { max_reads: 3 }
+
+    # Time + cascade: rotates whenever the core app-config secret is written
+    # (make wl-a-rotate, or the console's operator rotate action).
+    - name: session-signing
+      type: signing-key
+      strategies: [time, event]
+      events:
+        - { match: "kv-v2/data-*", path: shift-gear/config/app-config }
+
+    # Time only, slow cadence.
+    - name: batch-runner
+      type: service-password
+      strategies: [time]
+
+    # ── rotation-test secrets ────────────────────────────────────────────────
+    - name: rt-time
+      type: test-key
+      strategies: [time, event]
+    - name: rt-usage
+      type: test-slow
+      strategies: [time, usage, event]
+    - name: rt-event
+      type: test-slow
+      strategies: [time, event]
+      events:
+        - { match: "kv-v2/data-*", path: shift-gear/config/app-config }

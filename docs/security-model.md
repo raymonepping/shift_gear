@@ -113,6 +113,34 @@ remain necessary on the allowed paths.
 
 ---
 
+## KV rotation add-on: the runtime writer
+
+The add-on's controller is the one runtime writer of `kv/shift-gear/rotation/**`
+([rotation](rotation.md)):
+- **Policy:** `sg-rotation-controller`: create, update and read of values, and
+  metadata patch. No delete or destroy anywhere. Watched core paths get
+  metadata read and event subscription only, never a data read.
+- **Token:** obtained through Kubernetes auth by a `vault-agent` sidecar and
+  injected by its loopback `api_proxy`. The controller container holds no
+  token.
+- **People:** request rotations by patching custom metadata with their own
+  token (`sg-rotation-operator`, inherited through the internal group
+  `sg-rotation-operators`). Auditors read history (`sg-rotation-auditor`).
+- **Logs, state, `.build/` and the browser** see only 12-hex fingerprints.
+  `rotation-test` searches every one of those places for the managed values.
+
+**Sentinel EGP `sg-rotation-kv` (D18).** The core policy `sg-engineer` and
+the token `sg-ansible-platform` hold create/read/update on
+`kv/data/shift-gear/*`, which includes the managed prefix; an ACL cannot narrow
+that. The EGP refuses every value write that does not come from the
+controller's ServiceAccount, with CAS and within its type's policy. Operators
+may only patch `rotation_request`, and nobody may delete managed metadata.
+`sg-tf-platform` holds exactly one grant for it:
+`shift-gear/sys/policies/egp/sg-rotation-*`. Root tokens are exempt; reads are
+not governed.
+
+---
+
 ## Demo-grade vs. production
 
 | Aspect | This lab | Production change |

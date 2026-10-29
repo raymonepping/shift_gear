@@ -298,3 +298,28 @@ C02/C03 add `make observability-proof` (private scrape/access boundaries, actual
 Optional telemetry mode checks cover default-off shape (no backend deployments/PVCs or archive mount), preferred OpenTelemetry collection with original timestamps, Prometheus alternative, and disabled runtime/browser behavior with existing data retained. Runtime-only health checks do not replace the final full convergence gates. The live manifest records its selected optional configuration so a disabled-mode pass is not misread as enabled export proof.
 
 Seal-chain regression coverage includes valid negative Vault health codes, malformed health and Agent metadata, partial/unreachable sources, expired/future timestamps, Agent readiness and inconsistent leadership. Browser checks cover Agent failure/recovery, transport failure/recovery, retained-response expiry, and a real 125-second sampling window with a deliberately stale snapshot. `make observer-boundary` checks twenty named allow/deny cases across both observation namespaces. These targeted checks do not replace the source-bound full release ladder.
+
+---
+
+## KV rotation add-on: `make rotation-validate` and `make rotation-test`
+
+The add-on ([rotation](rotation.md), D17) has its own gates, outside `make lab`:
+
+- **`make rotation-validate`** (offline, also in CI):
+  - 47 controller unit tests (stdlib `unittest`, a fake KV v2 with CAS);
+  - `rotation.yaml` validation;
+  - `terraform fmt`, `validate` and `test` of the add-on root (6 shape runs,
+    including a refused loosening config);
+  - a check that the Vault image digest matches the core;
+  - add-on `ansible-lint --profile production`;
+  - ShellCheck.
+- **`make rotation-test [S=nn]`** (live): s01–s11 plus a leak check, with
+  evidence in `.build/addons/rotation/rotation-test.json`. Scenario list in
+  [rotation.md](rotation.md#live-proof-make-rotation-test).
+- **UI:** `ui/tests/rotation.spec.ts` (tag `@kv-rotation`: persona matrix,
+  Rotate now journey, no value in the DOM, idempotent request, refused
+  origins and names) and `ui/tests/rotation-not-installed.spec.ts`, which runs
+  only when the add-on is absent. `/engines/rotation` is part of the axe scan.
+  Unit helpers: `ui/unit/kv-rotation.test.mjs`.
+- **Scenario 10** (`scenarios/10_kv_rotation`): watch two scheduled rotations;
+  it skips cleanly without the add-on.

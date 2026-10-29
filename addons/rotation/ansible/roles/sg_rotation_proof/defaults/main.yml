@@ -1,0 +1,6 @@
+---
+# Persona whose operator membership must yield `patch` on managed metadata,
+# and one whose staff-only membership must not (inheritance proof).
+sg_rotation_proof_operator: cleo
+sg_rotation_proof_outsider: ben
+sg_rotation_proof_probe_path: "{{ sg_rotation_mount }}/metadata/{{ sg_rotation_prefix }}/api-key/demo"

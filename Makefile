@@ -111,7 +111,7 @@ secret-scan: ## Scan for leaked secrets: known values, hv[sbr] tokens, PEM keys,
 boundary: ## Prove tool boundary: 19 sys/capabilities-self checks across all four bootstrap tokens
 	@./scripts/boundary-check.sh
 
-rotation-proof: ## Rotate the seal agent AppRole secret-id twice; prove previous ID absent, current lookup=200, count=1
+rotation-proof: ## Seal agent secret-id rotator — rotate the AppRole secret-id twice; prove previous ID absent, current lookup=200, count=1
 	@./scripts/rotation-proof.sh
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────────
@@ -262,3 +262,6 @@ observability-proof: ## Prove C02 private scraping, access denial, redaction and
 .PHONY: consumer-proof
 consumer-proof: ## Prove isolated Agent database delivery, denied cross-app access, expiry and recovery
 	@./scripts/consumer-proof.sh
+
+# ── Add-ons (removable; ADR D17) ─────────────────────────────────────────────
+-include addons/rotation/rotation.mk

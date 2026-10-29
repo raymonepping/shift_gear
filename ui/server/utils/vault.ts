@@ -1,6 +1,5 @@
-// server/utils/vault.ts — BFF → Vault calls with the project CA.
-// Used for OIDC sign-in and token revocation only.
-// All other Vault calls go through the Express API (sg-api).
+// server/utils/vault.ts — BFF → Vault calls with the project CA, made with the
+// signed-in person's own Vault token (session.vaultToken) so Vault decides.
 import fs from 'node:fs'
 import https from 'node:https'
 
@@ -16,7 +15,7 @@ export interface VaultReply { status: number; json: unknown }
 export function vaultCall(
   method: string,
   path: string,
-  opts: { token?: string; body?: unknown; query?: Record<string, string> } = {},
+  opts: { token?: string; body?: unknown; query?: Record<string, string>; contentType?: string } = {},
 ): Promise<VaultReply> {
   const cfg = useRuntimeConfig()
   const url = new URL(`/v1/${path}`, cfg.vaultAddr)
@@ -33,7 +32,7 @@ export function vaultCall(
           'X-Vault-Namespace': cfg.vaultNamespace,
           ...(opts.token ? { 'X-Vault-Token': opts.token } : {}),
           ...(payload
-            ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+            ? { 'Content-Type': opts.contentType ?? 'application/json', 'Content-Length': Buffer.byteLength(payload) }
             : {}),
         },
         timeout: 10_000,

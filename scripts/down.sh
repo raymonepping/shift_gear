@@ -3,10 +3,10 @@
 #
 # down : scale all workloads to 0 (seal Vault last), then scripts/crc-down.sh.
 #        NEVER deletes PVCs, Secrets or .secrets/.
-# up   : scripts/crc-up.sh, scale seal Vault, unseal, seal agent, main Vault,
-#        identity, workloads, app; then make verify.
-#        If the seal agent cannot authenticate (expired secret-id > 24 h),
-#        runs make agent to re-mint it first.
+# up   : scripts/crc-up.sh, scale seal Vault, unseal, refresh seal tokens
+#        (seal-init), seal agent (make agent re-mints expired secret-ids
+#        before the agent starts), main Vault, refresh platform tokens
+#        (bootstrap), identity, workloads, app; then make verify.
 # reset: DESTRUCTIVE — requires typing 'shift-gear' (or CONFIRM=shift-gear; DRY_RUN=1 lists only). Deletes namespaces and
 #        moves generated state to .secrets/archive/<timestamp>/. Keeps CRC VM.
 set -euo pipefail
@@ -22,6 +22,11 @@ action="${1:-}"
 
 require_kubeconfig
 
+# Namespaces of installed add-ons (ADR D17): labelled shift-gear/addon.
+addon_namespaces() {
+  oc get namespace -l shift-gear/addon -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true
+}
+
 scale() {
   local ns="$1" selector="$2" replicas="$3"
   oc -n "${ns}" scale deployment --selector "${selector}" --replicas "${replicas}" 2>/dev/null
@@ -33,6 +38,13 @@ case "${action}" in
 down)
   "${SCRIPT_DIR}/crc-health.sh" --require-control
   info "Scaling down — application namespaces first, seal Vault last"
+  # Add-ons (ADR D17; namespaces labelled shift-gear/addon) stop before Vault
+  # does. The rotation add-on is stateless (one CAS write per rotation), so
+  # there is nothing to drain.
+  for ns in $(addon_namespaces); do
+    info "  scale ${ns} → 0 (add-on)"
+    oc -n "${ns}" scale deployment --all --replicas 0 2>/dev/null
+  done
   for ns in sg-app sg-workloads sg-identity; do
     info "  scale ${ns} → 0"
     oc -n "${ns}" scale deployment --all --replicas 0 2>/dev/null
@@ -63,20 +75,28 @@ up)
   info "Unsealing seal Vault"
   "${SCRIPT_DIR}/ansible-run.sh" unseal
 
-  info "Scaling seal-agent up"
-  oc -n sg-vault-seal scale deployment seal-agent --replicas 1
-  # Availability does not prove that the in-memory token survived downtime.
-  # Reauthenticate, repair expired IDs if necessary, and prove Transit before
-  # asking main Vault to unseal.
-  oc -n sg-vault-seal rollout restart deployment/seal-agent
-  oc -n sg-vault-seal rollout status deployment/seal-agent --timeout=180s
+  # The bootstrap tokens are periodic (24 h); a lab left down longer comes
+  # back with refused tokens. seal-init renews live ones and re-issues refused
+  # ones through their token role (init and unseal are guarded no-ops).
+  info "Refreshing seal Vault bootstrap tokens"
+  "${SCRIPT_DIR}/ansible-run.sh" seal-init
+
+  # Repair expired secret-ids BEFORE the agent starts: an agent started on a
+  # stale ID fails its logins and locks the AppRole, so the fresh ID is then
+  # refused too. The agent phase scales seal-agent up (restarting it when it
+  # was already running) and proves Transit before main Vault unseals.
+  info "Starting seal-agent with verified credentials"
   "${SCRIPT_DIR}/ansible-run.sh" agent
+  oc -n sg-vault-seal rollout status deployment/seal-agent --timeout=180s
 
   info "Scaling main Vault cluster up"
   oc -n sg-vault scale statefulset vault --replicas 3
   info "Waiting for Vault pods (auto-unseals through seal agent)"
   oc -n sg-vault wait pod -l app.kubernetes.io/name=vault \
     --for=condition=Ready --timeout=300s
+  # Same 24 h period as the seal tokens; wait-raft.py and verify use them.
+  info "Refreshing platform bootstrap tokens"
+  "${SCRIPT_DIR}/ansible-run.sh" bootstrap
   python3 "${SCRIPT_DIR}/wait-raft.py" --unsealed
 
   info "Scaling identity stack up"
@@ -96,10 +116,20 @@ up)
   oc -n sg-app wait deployment --all --for=condition=Available --timeout=300s
 
   info "Waiting for Vault Secrets Operator reconciliation"
+  # VSO can park a secret that failed while main Vault was down and never
+  # requeue it; touching an annotation forces a fresh reconcile.
+  oc -n sg-workloads annotate vaultstaticsecret/app-config vaultdynamicsecret/db-creds \
+    shift-gear/reconcile-nudge="$(date -u +%s)" --overwrite >/dev/null
   oc -n sg-workloads wait vaultstaticsecret/app-config \
     --for=condition=SecretSynced --timeout=180s
   oc -n sg-workloads wait vaultdynamicsecret/db-creds \
     --for=condition=SecretSynced --timeout=180s
+
+  for ns in $(addon_namespaces); do
+    info "Scaling add-on ${ns} up"
+    oc -n "${ns}" scale deployment --all --replicas 1
+    oc -n "${ns}" wait deployment --all --for=condition=Available --timeout=180s
+  done
 
   info "Running make verify"
   VERIFY_SCOPE=runtime make -C "${ROOT_DIR}" verify
@@ -127,6 +157,7 @@ reset)
     find "${SECRETS_DIR}/tls" -maxdepth 2 -type f \( -name '*.key' -o -name '*.crt' \) \
       ! -name 'ca.key' 2>/dev/null | sort)
   namespaces=(sg-app sg-workloads sg-identity sg-vault sg-vault-seal)
+  while IFS= read -r ns; do [[ -n "${ns}" ]] && namespaces+=("${ns}"); done < <(addon_namespaces)
 
   if [[ "${DRY_RUN:-0}" == "1" ]]; then
     info "DRY RUN: make reset would move into .secrets/archive/<timestamp>/:"

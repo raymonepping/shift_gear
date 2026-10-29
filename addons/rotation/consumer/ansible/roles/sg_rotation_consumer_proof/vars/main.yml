@@ -1,0 +1,9 @@
+---
+# One-liners run inside the consumer container (read status / inspect isolation; never a value).
+sg_rotation_consumer_proof_read_status: >-
+  import json;d=json.load(open('/status/state.json'));c=d['consumer'];
+  print(json.dumps({'version':c['version'],'state':c['state'],'probe':d['vault']['probe']}))
+sg_rotation_consumer_proof_isolation_check: >-
+  import os,glob;
+  print(int(any(k.startswith('VAULT_') for k in os.environ)),
+  int(bool(glob.glob('/var/run/secrets/**/token', recursive=True))))

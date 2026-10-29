@@ -1,0 +1,45 @@
+---
+# Remove only what the add-on configured. Managed secrets, their versions and
+# their custom-metadata history stay in Vault on purpose.
+- name: Remove the add-on's Vault configuration
+  module_defaults:
+    ansible.builtin.uri:
+      ca_path: "{{ sg_rotation_vault_ca }}"
+      headers:
+        X-Vault-Token: "{{ sg_vault_token }}"
+        X-Vault-Namespace: "{{ sg_rotation_vault_namespace }}"
+  no_log: true
+  block:
+    - name: Read the controller's Kubernetes auth role
+      ansible.builtin.uri:
+        url: "{{ sg_rotation_vault_addr }}/v1/auth/{{ sg_rotation_k8s_auth_mount }}/role/sg-rotation-controller"
+        status_code: [200, 404]
+      check_mode: false
+      register: sg_rotation_unconfigure_role
+
+    - name: Delete the controller's Kubernetes auth role
+      ansible.builtin.uri:
+        url: "{{ sg_rotation_vault_addr }}/v1/auth/{{ sg_rotation_k8s_auth_mount }}/role/sg-rotation-controller"
+        method: DELETE
+        status_code: [200, 204]
+      changed_when: true
+      when: sg_rotation_unconfigure_role.status == 200
+
+    - name: Read the add-on's internal groups
+      ansible.builtin.uri:
+        url: "{{ sg_rotation_vault_addr }}/v1/identity/group/name/{{ item }}"
+        status_code: [200, 404]
+      check_mode: false
+      loop: "{{ sg_rotation_groups.keys() | list }}"
+      register: sg_rotation_unconfigure_groups
+
+    - name: Delete the add-on's internal groups
+      ansible.builtin.uri:
+        url: "{{ sg_rotation_vault_addr }}/v1/identity/group/name/{{ item.item }}"
+        method: DELETE
+        status_code: [200, 204]
+      changed_when: true
+      loop: "{{ sg_rotation_unconfigure_groups.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.status == 200

@@ -216,7 +216,18 @@
   changed_when: true
   no_log: true
 
-- name: Restart seal-agent Deployment to pick up new credentials
+- name: Read seal-agent Deployment replicas
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: seal-agent
+    namespace: sg-vault-seal
+  register: sg_seal_agent_deployment
+  check_mode: false
+
+# make up leaves the agent at 0 replicas until this point, so it only ever
+# starts on a secret-id checked above (a stale one would lock the AppRole).
+- name: Start or restart seal-agent Deployment to pick up credentials
   kubernetes.core.k8s:
     api_version: apps/v1
     kind: Deployment
@@ -224,11 +235,15 @@
     namespace: sg-vault-seal
     definition:
       spec:
+        replicas: 1
         template:
           metadata:
             annotations:
               shift-gear/credentials-rotated: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
-  when: sg_seal_agent_needs_new_secret_id | bool or sg_seal_agent_rotator_needs_new_secret_id | bool
+  when: >-
+    sg_seal_agent_needs_new_secret_id | bool or
+    sg_seal_agent_rotator_needs_new_secret_id | bool or
+    (sg_seal_agent_deployment.resources[0].spec.replicas | default(0) | int) == 0
 
 # ── Wait for the agent to hold a token ────────────────────────────────────────
 - name: Wait for the seal agent pod to be running
@@ -271,14 +286,22 @@
             command:
               - /bin/sh
               - -c
+              # Exit non-zero on failure so the pod phase is Failed: the
+              # listener answering is not proof — the agent must hold a token.
+              # Retries cover the agent's first login after a (re)start.
               - |
-                vault write -address=https://seal-agent.sg-vault-seal.svc:8200 \
-                  -ca-cert=/vault/userconfig/sg-ca/ca.pem \
-                  -client-cert=/vault/userconfig/vault-tls/tls.crt \
-                  -client-key=/vault/userconfig/vault-tls/tls.key \
-                  transit/encrypt/autounseal \
-                  plaintext="$(echo 'shift-gear-probe' | base64)" && \
-                echo "AGENT_PROBE_PASS" || echo "AGENT_PROBE_FAIL"
+                for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+                  if vault write -address=https://seal-agent.sg-vault-seal.svc:8200 \
+                    -ca-cert=/vault/userconfig/sg-ca/ca.pem \
+                    -client-cert=/vault/userconfig/vault-tls/tls.crt \
+                    -client-key=/vault/userconfig/vault-tls/tls.key \
+                    transit/encrypt/autounseal \
+                    plaintext="$(echo 'shift-gear-probe' | base64)" >/dev/null; then
+                    echo "AGENT_PROBE_PASS"; exit 0
+                  fi
+                  sleep 5
+                done
+                echo "AGENT_PROBE_FAIL"; exit 1
             securityContext:
               allowPrivilegeEscalation: false
               capabilities:

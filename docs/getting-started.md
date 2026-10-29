@@ -107,7 +107,7 @@ make identity-show-user PERSON=ada
 Open `https://shiftgear.apps-crc.testing` for the Shift Gear console. Sign in with username
 `ada` — Keycloak handles the redirect. On return, `ada`'s identity policies include `sg-engineer` (alongside the token's default policy). The `staff` directory group deliberately carries no policy.
 
-For the Vault UI directly: `https://vault.apps-crc.testing` → **Sign in with OIDC**.
+For the Vault UI directly: `https://vault.apps-crc.testing` → set **Namespace** to `shift-gear` (the auth methods exist only there; the root namespace answers "permission denied") → method **OIDC** (Keycloak) or **LDAP** with a persona, e.g. `ada`, whose password `./scripts/identity-show-user.sh ada` prints.
 
 ---
 

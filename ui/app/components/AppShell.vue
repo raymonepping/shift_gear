@@ -3,9 +3,11 @@ const route = useRoute()
 const { session, load } = useAuth()
 const { sealChainLabel, startLive, stopLive } = useFleet()
 const runtime = useRuntime()
+const { load: loadFeatures, rotationVisible } = useFeatures()
 
 onMounted(async () => {
   await load()
+  loadFeatures()
   startLive()
   runtime.startLive()
 })
@@ -15,6 +17,10 @@ const nav = computed(() => [
   { to: '/', label: 'Fleet', icon: 'fleet', active: route.path === '/' },
   { to: '/layers', label: 'Layers', icon: 'layers', active: route.path === '/layers' },
   { to: '/engines', label: 'Engines', icon: 'engines', active: route.path === '/engines' },
+  // KV rotation add-on (ADR D17): shown only while the add-on is installed.
+  ...(rotationVisible.value || route.path === '/engines/rotation'
+    ? [{ to: '/engines/rotation', label: 'Rotation', icon: 'rotation', active: route.path === '/engines/rotation', child: true }]
+    : []),
   { to: '/pods', label: 'Pods', icon: 'pods', active: route.path === '/pods' },
   { to: '/routes', label: 'Routes', icon: 'routes', active: route.path === '/routes' },
   { to: '/operator', label: 'Operator', icon: 'operator', active: route.path === '/operator' },
@@ -27,7 +33,7 @@ const nav = computed(() => [
 
 const title = computed(() => {
   const labels: Record<string, string> = {
-    '/': 'Fleet', '/layers': 'Layers', '/engines': 'Engines', '/pods': 'Pods',
+    '/': 'Fleet', '/layers': 'Layers', '/engines': 'Engines', '/engines/rotation': 'Rotation', '/pods': 'Pods',
     '/routes': 'Routes', '/operator': 'Operator', '/ansible': 'Ansible',
     '/agent': 'Agent', '/audit': 'Audit', '/cluster': 'Cluster', '/explorer': 'Policy and ownership',
   }
@@ -55,13 +61,14 @@ const chain = computed(() => sealChainLabel.value)
             :key="item.to"
             :to="item.to"
             class="nav-item"
-            :class="{ active: item.active }"
+            :class="{ active: item.active, 'nav-item--child': 'child' in item }"
             :aria-current="item.active ? 'page' : undefined"
           >
             <span class="nav-icon" aria-hidden="true">
               <svg v-if="item.icon === 'fleet'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-8 4 16 3-8h4" /></svg>
               <svg v-else-if="item.icon === 'layers'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 9 5-9 5-9-5 9-5Z" /><path d="m3 13 9 5 9-5" /></svg>
               <svg v-else-if="item.icon === 'engines'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4.5" /><path d="m10.7 12.3 9.3-9.3M17 6l3 3M14.5 8.5l2 2" /></svg>
+              <svg v-else-if="item.icon === 'rotation'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 1-15.5 6.2M3 12a9 9 0 0 1 15.5-6.2" /><path d="M18.5 2v4h-4M5.5 22v-4h4" /></svg>
               <svg v-else-if="item.icon === 'pods'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="2" /><rect x="3" y="13" width="18" height="7" rx="2" /><path d="M7 7.5h.01M7 16.5h.01" /></svg>
               <svg v-else-if="item.icon === 'routes'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v16M2 21h20M14 12h.01" /></svg>
               <svg v-else-if="item.icon === 'operator'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" /><path d="M16 3v4M8 3v4" /></svg>
@@ -141,6 +148,8 @@ const chain = computed(() => sealChainLabel.value)
 .brand-name { font-size: 18px; font-weight: 800; letter-spacing: -0.03em; color: var(--vg-text-primary); }
 .sidebar-nav { flex: 1; padding: 12px 0; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
 .nav-item { display: flex; align-items: center; gap: 10px; margin: 0 8px; padding: 0 10px; height: 34px; font-size: 13px; font-weight: 550; color: var(--vg-text-secondary); border-radius: 8px; transition: background 0.18s var(--vg-ease-out), color 0.18s; }
+.nav-item--child { margin-left: 26px; height: 30px; font-size: 12.5px; }
+.nav-item--child .nav-icon svg { width: 14px; height: 14px; }
 .nav-item:hover { background: rgba(255,255,255,0.55); color: var(--vg-text-primary); }
 .nav-item.active { background: rgba(255,255,255,0.85); color: var(--vg-text-primary); font-weight: 650; box-shadow: inset 0 0 0 1px rgba(15,26,42,0.08), 0 4px 12px -8px rgba(15,26,42,0.35); }
 .nav-item.active .nav-icon { color: var(--vg-action-primary); }

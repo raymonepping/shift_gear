@@ -1,0 +1,83 @@
+---
+# The add-on's Vault configuration with sg-ansible-platform: the controller's
+# Kubernetes auth role and two internal identity groups. Read first, write only
+# when absent or different (changed=0 on a re-run).
+- name: Configure Vault for the rotation controller
+  module_defaults:
+    ansible.builtin.uri:
+      ca_path: "{{ sg_rotation_vault_ca }}"
+      headers:
+        X-Vault-Token: "{{ sg_vault_token }}"
+        X-Vault-Namespace: "{{ sg_rotation_vault_namespace }}"
+  no_log: true
+  block:
+    - name: Read the controller's Kubernetes auth role
+      ansible.builtin.uri:
+        url: "{{ sg_rotation_vault_addr }}/v1/auth/{{ sg_rotation_k8s_auth_mount }}/role/sg-rotation-controller"
+        status_code: [200, 404]
+      check_mode: false
+      register: sg_rotation_vault_role
+
+    - name: Write the controller's Kubernetes auth role when absent or changed
+      ansible.builtin.uri:
+        url: "{{ sg_rotation_vault_addr }}/v1/auth/{{ sg_rotation_k8s_auth_mount }}/role/sg-rotation-controller"
+        method: POST
+        body_format: json
+        body: "{{ sg_rotation_k8s_role }}"
+        status_code: [200, 204]
+      changed_when: true
+      when: >-
+        sg_rotation_vault_role.status == 404 or
+        (sg_rotation_vault_role.json.data.token_ttl | default(0) | int) != sg_rotation_k8s_role.token_ttl or
+        (sg_rotation_vault_role.json.data.token_max_ttl | default(0) | int) != sg_rotation_k8s_role.token_max_ttl or
+        (sg_rotation_vault_role.json.data.policies | default([]) | sort) != (sg_rotation_k8s_role.policies | sort) or
+        (sg_rotation_vault_role.json.data.bound_service_account_names | default([]) | sort)
+          != (sg_rotation_k8s_role.bound_service_account_names | sort) or
+        (sg_rotation_vault_role.json.data.bound_service_account_namespaces | default([]) | sort)
+          != (sg_rotation_k8s_role.bound_service_account_namespaces | sort)
+
+    - name: Look up the external member groups
+      ansible.builtin.uri:
+        url: "{{ sg_rotation_vault_addr }}/v1/identity/group/name/{{ item }}"
+        status_code: [200]
+      check_mode: false
+      loop: "{{ sg_rotation_groups.values() | map(attribute='members') | flatten | unique }}"
+      register: sg_rotation_vault_members
+
+    - name: Map external group names to ids
+      ansible.builtin.set_fact:
+        sg_rotation_vault_member_ids: >-
+          {{ dict(sg_rotation_vault_members.results | map(attribute='item')
+                  | zip(sg_rotation_vault_members.results | map(attribute='json.data.id'))) }}
+
+    - name: Read the add-on's internal groups
+      ansible.builtin.uri:
+        url: "{{ sg_rotation_vault_addr }}/v1/identity/group/name/{{ item.key }}"
+        status_code: [200, 404]
+      check_mode: false
+      loop: "{{ sg_rotation_groups | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      register: sg_rotation_vault_groups
+
+    - name: Write the add-on's internal groups when absent or changed
+      ansible.builtin.uri:
+        url: "{{ sg_rotation_vault_addr }}/v1/identity/group/name/{{ item.item.key }}"
+        method: POST
+        body_format: json
+        body:
+          type: internal
+          policies: "{{ item.item.value.policies }}"
+          member_group_ids: "{{ item.item.value.members | map('extract', sg_rotation_vault_member_ids) | list }}"
+          metadata:
+            managed_by: kv-rotation-addon
+        status_code: [200, 204]
+      changed_when: true
+      loop: "{{ sg_rotation_vault_groups.results }}"
+      loop_control:
+        label: "{{ item.item.key }}"
+      when: >-
+        item.status == 404 or
+        (item.json.data.policies | default([]) | sort) != (item.item.value.policies | sort) or
+        (item.json.data.member_group_ids | default([]) | sort)
+          != (item.item.value.members | map('extract', sg_rotation_vault_member_ids) | list | sort)

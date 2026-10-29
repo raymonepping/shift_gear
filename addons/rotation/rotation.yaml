@@ -1,0 +1,61 @@
+# addons/rotation/rotation.yaml — declarative KV v2 value rotation
+#
+# Types carry the defaults (generator, schedule, policy); secrets pick a type
+# and may only tighten it. Managed secrets live at
+#   kv/<prefix>/<type>/<name>        e.g. kv/shift-gear/rotation/api-key/demo
+# and are addressed as <type>/<name> by the CLI (SECRET=api-key/demo).
+#
+# Intervals are demo-short so a rotation is visible within minutes; a
+# production profile would use days (P7D/P30D/P90D style: 7d, 30d, 90d).
+# Validated by Terraform (preconditions), `make rotation-validate`, and the
+# controller at start-up — see addons/rotation/controller/rotation/config.py.
+
+rotation:
+  mount: kv
+  prefix: shift-gear/rotation
+  loop_seconds: 10
+  defaults:
+    max_versions: 20
+
+  types:
+    api-key:
+      generator: { kind: chars, charset: alnum, length: 32 }
+      schedule: { interval: 60s }
+      policy: { max_age: 5m, min_length: 32, max_reads: 5 }
+
+    signing-key:
+      generator: { kind: bytes, bytes: 48, encoding: base64url }
+      schedule: { interval: 5m }
+      policy: { max_age: 15m, min_length: 64 }
+
+    service-password:
+      generator: { kind: password, length: 24, classes: [lower, upper, digit, symbol] }
+      schedule: { interval: 10m }
+      policy: { max_age: 30m, min_length: 20 }
+
+  secrets:
+    # Time + usage + human request: the general-purpose demo secret.
+    - name: demo
+      type: api-key
+      strategies: [time, usage, event]
+      usage: { max_reads: 3 }
+
+    # Time + cascade: rotates whenever the core app-config secret is written
+    # (make wl-a-rotate, or the console's operator rotate action).
+    - name: session-signing
+      type: signing-key
+      strategies: [time, event]
+      events:
+        - { match: "kv-v2/data-*", path: shift-gear/config/app-config }
+
+    # Time only, slow cadence.
+    - name: batch-runner
+      type: service-password
+      strategies: [time]
+
+    # Watched by the Secure Door consumer (addons/rotation/consumer, prompt 01_09).
+    # Deliberately no usage strategy: its Vault Agent re-reads every few
+    # seconds, and usage-based rotation counts every audited reader.
+    - name: secure-door
+      type: api-key
+      strategies: [time, event]

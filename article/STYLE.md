@@ -3,8 +3,40 @@
 This applies to everything published under `article/`. It is scoped
 narrower than `.agents/skills/no-ai-slop/SKILL.md` on purpose — that
 skill also edits `docs/`, where a personal narrator voice would be
-wrong. Articles are Raymon's own first-person account of building Shift
-Gear. Docs are not.
+wrong. Articles are Raymon's own first-person accounts of the projects
+and subjects he writes about. Docs are not.
+
+## Title and subtitle: always use H1 and H2
+
+Start every article with this structure:
+
+```markdown
+# Title
+
+## Subtitle
+
+> Pull quote
+```
+
+Always make both the title and subtitle as SEO-friendly as possible
+while preserving natural language, accuracy and Raymon's voice.
+
+- Use one H1 title that names the subject and gives a concrete reason
+  to read. Include the main search phrase naturally.
+- Put the subtitle immediately below it as an H2, not an italic
+  paragraph. Expand the title with relevant search terms, the product
+  name or the reader's use case rather than repeating it.
+- Write for people looking for this subject. Avoid keyword stuffing,
+  vague hooks and promises the article cannot support. Do not claim
+  search rankings or invent search-volume evidence.
+- Place the pull quote directly below the subtitle, before the body.
+- Use descriptive H2 section headings that help readers find the
+  functionality or question they came for. Keep tables out of articles;
+  use prose or bulleted lists where they fit.
+
+For product articles, lead with why Raymon wanted the product and what
+he can do with it. Include the development process or tools only when
+they serve the requested angle.
 
 ## First person singular, not "we"
 

@@ -20,6 +20,7 @@ Shift Gear runs on a single OpenShift Local (CRC) instance. Three concerns, thre
 | `sg-workloads` | tf workloads | workload-a (VSO static), workload-b (VSO dynamic), PostgreSQL |
 | `sg-app` | tf workloads | agent-demo (Vault Agent sidecar), sg-ui (Nuxt + Nitro BFF), sg-audit collector |
 | `openshift-operators` | tf foundation | Vault Secrets Operator (CSV) |
+| `sg-rotation` (add-on) | addons/rotation/terraform | KV rotation controller (controller + vault-agent + vault-events); present only after `make rotation-up` ([rotation](rotation.md), D17) |
 
 The five project namespaces are created by `terraform/foundation/`. The VSO Subscription is in
 the existing `openshift-operators` namespace; the operator is cluster-scoped.
@@ -188,7 +189,9 @@ not declare a namespace-wide default-deny or restrict egress.
 | Keycloak proxy | Router and Vault pods, 8444; forwards locally to Keycloak 8443 with certificate verification |
 | OpenLDAP | Keycloak and Vault pods, 1389 |
 | PostgreSQL | workload-a/b and Vault pods, 5432 |
-| Audit collector | Vault pods on 9090; sg-ui on 8080 |
+| Audit collector | Vault pods on 9090; sg-ui on 8080; rotation controller on 8080 (add-on, additive policy `sg-audit-allow-sg-rotation`) |
+| Vault cluster (add-on) | rotation controller in sg-rotation on 8200 (additive policy `allow-sg-rotation`) |
+| Rotation controller (add-on) | sg-ui on 8080 only (read-only status); default-deny for the rest of sg-rotation |
 
 Workload-a/b and sg-ui have no selecting ingress policy. These are lab
 boundaries; they do not establish namespace-wide network isolation.
@@ -250,6 +253,18 @@ graph TD
 ```
 
 See also: [`docs/frontend/DESIGN.md`](frontend/DESIGN.md) for the console UI design.
+
+## Add-ons
+
+Add-ons are removable extensions with their own Terraform root, namespace
+and make targets. They are not in `scripts/phases.txt`, not in the
+convergence digest, and change no core object.
+
+| Add-on | Install / remove | Owns | Document |
+| --- | --- | --- | --- |
+| KV v2 value rotation | `make rotation-up` / `make rotation-down` | `sg-rotation`, policies `sg-rotation-*`, two additive NetworkPolicies, the controller's Kubernetes auth role and two internal identity groups; the controller is the runtime writer of `kv/shift-gear/rotation/**` | [rotation.md](rotation.md) |
+
+---
 
 ## Selected Should extensions
 

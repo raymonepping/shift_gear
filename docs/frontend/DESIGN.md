@@ -124,6 +124,7 @@ One button: "Sign in with Vault OIDC."
 Fleet          ← main dashboard
 Layers         ← phases + gates
 Engines        ← mounted engines + skipped table
+  Rotation     ← KV rotation add-on (nested; shown only while installed, D17)
 Pods           ← per-pod cards
 Routes         ← OpenShift Routes
 Operator       ← VSO CRDs panel
@@ -139,6 +140,18 @@ Topbar (persistent, floating glass):
 - Right: signed-in user · role badge (ADMIN / OPERATOR / ENGINEER / AUDITOR / MEMBER) · Sign out.
 
 ⌘K palette to jump to any page by name.
+
+**Engines › Rotation** (`/engines/rotation`) follows the same contract: one
+dark hero (managed · compliant % · next rotation · events mode), then glass
+panels for Compliance (KPI strip per type plus plain-word reasons), Managed
+secrets (a `vg-table` whose rows expand into a version timeline of version,
+mono fingerprint, trigger, time and actor; unrecorded versions get an amber 6%
+wash, never a coloured rail) and Rotation policies. **Rotate now** is the
+page's one primary (ink) action, rendered only when Vault grants `patch`. Its
+receipt says "accepted" until Vault shows the new version. Values are never
+rendered; only fingerprints. The nav child appears only when
+`/api/features` reports the add-on installed or degraded. Without it the page
+still renders a "not installed" state, never a 404.
 
 ---
 

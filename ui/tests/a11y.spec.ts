@@ -6,7 +6,7 @@ import { expect, test, type Page } from '@playwright/test'
 import { BASE, pageAs } from './auth'
 
 const ROUTES = [
-  '/', '/layers', '/engines', '/pods', '/routes',
+  '/', '/layers', '/engines', '/engines/rotation', '/pods', '/routes',
   '/operator', '/ansible', '/agent', '/audit', '/cluster', '/help', '/explorer', '/observability',
 ]
 const VIEWPORTS = [

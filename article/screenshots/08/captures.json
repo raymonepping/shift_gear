@@ -1,0 +1,196 @@
+{
+  "method": "Playwright Chromium, real authenticated console, no mocked responses or image retouching",
+  "persona": "ada",
+  "tlsVerification": true,
+  "applicationSourceDigest": "6a6f20e230df9f461e62a84cd688c046397e9a3a991b2a36531f179de6a4dea5",
+  "lastConvergenceRunId": "018a7803-7fc9-4551-8281-c91f23e19adc",
+  "clusterId": "bef1f3e7-a9c6-43bb-9847-a0ee756cd38c",
+  "captures": [
+    {
+      "filename": "fleet-desktop.png",
+      "route": "/",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "capturedAt": "2026-10-23T12:00:49.363Z",
+      "tlsVerification": true,
+      "sha256": "a031b8b5925f09f1241d95b85f8a3733c9a38e25c27438268aa71c69fcb9d92f",
+      "imageSize": {
+        "width": 1440,
+        "height": 1231
+      }
+    },
+    {
+      "filename": "layers-desktop.png",
+      "route": "/layers",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "capturedAt": "2026-10-23T12:00:50.100Z",
+      "tlsVerification": true,
+      "sha256": "0ee953fb7e484db95f261b43d74d841af495d33a731fd89648d29a7aa4441aaa",
+      "imageSize": {
+        "width": 1440,
+        "height": 1710
+      }
+    },
+    {
+      "filename": "operator-desktop.png",
+      "route": "/operator",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "capturedAt": "2026-10-23T12:00:50.801Z",
+      "tlsVerification": true,
+      "sha256": "79530e6685055650bdeda92927fda5be22505a5547bc339a4fe156656368ad72",
+      "imageSize": {
+        "width": 1440,
+        "height": 1045
+      }
+    },
+    {
+      "filename": "cluster-desktop.png",
+      "route": "/cluster",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "capturedAt": "2026-10-23T12:00:51.525Z",
+      "tlsVerification": true,
+      "sha256": "6699fdeed3a2a49a1a5290233ad119cb327b3379eb289948bdb5bcc4be6fa3b2",
+      "imageSize": {
+        "width": 1440,
+        "height": 1401
+      }
+    },
+    {
+      "filename": "ownership-desktop.png",
+      "route": "/explorer",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "capturedAt": "2026-10-23T12:00:53.254Z",
+      "tlsVerification": true,
+      "sha256": "1061c52fff839d59e1b2588b18241c1a0d4ae5aa3164c3cd93727000be37ec8a",
+      "imageSize": {
+        "width": 1440,
+        "height": 4384
+      }
+    },
+    {
+      "filename": "observability-desktop.png",
+      "route": "/observability",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "capturedAt": "2026-10-23T12:00:54.089Z",
+      "tlsVerification": true,
+      "sha256": "8db7b98b7d4fff9d57ed863da88bf599b6c29773973f275b68fdaa0115337dad",
+      "imageSize": {
+        "width": 1440,
+        "height": 2303
+      }
+    },
+    {
+      "filename": "agent-desktop.png",
+      "route": "/agent",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "capturedAt": "2026-10-23T12:00:54.796Z",
+      "tlsVerification": true,
+      "sha256": "1b09416787cf8ad4c985c2aceac260637e270df1db70203941b40cc01d9d3a08",
+      "imageSize": {
+        "width": 1440,
+        "height": 938
+      }
+    },
+    {
+      "route": "/audit",
+      "filter": {
+        "type": "request"
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 1400
+      },
+      "capturedAt": "2026-10-23T13:17:24.669Z",
+      "tlsVerification": true,
+      "filename": "audit-desktop.png",
+      "sha256": "94f0526ab03ea00c91131fd2ecb3a1bf70d82f978259c4956ee522670aaa51dd",
+      "imageSize": {
+        "width": 1440,
+        "height": 3850
+      }
+    },
+    {
+      "filename": "fleet-mobile.png",
+      "route": "/",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "capturedAt": "2026-10-23T12:00:56.701Z",
+      "tlsVerification": true,
+      "sha256": "7d1eb3a23060444a3f5f045ce9522e7b905fd62cb14582ff60eb43158be5d267",
+      "imageSize": {
+        "width": 390,
+        "height": 2895
+      }
+    },
+    {
+      "filename": "observability-mobile.png",
+      "route": "/observability",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "capturedAt": "2026-10-23T12:00:57.424Z",
+      "tlsVerification": true,
+      "sha256": "4939eec74b5271f2d744f5db7f49aa80867e2c44503156189cc245ec3f09fdcc",
+      "imageSize": {
+        "width": 390,
+        "height": 2981
+      }
+    },
+    {
+      "filename": "ownership-detail.png",
+      "route": "/explorer",
+      "filter": {
+        "owner": "Terraform"
+      },
+      "element": "Field ownership",
+      "capturedAt": "2026-10-23T13:16:09.125Z",
+      "tlsVerification": true,
+      "sha256": "f0740096caca5d2b32b0e30c22200456c55c26529724e774f2c8a0bcfdfee30b",
+      "imageSize": {
+        "width": 1168,
+        "height": 1141
+      }
+    },
+    {
+      "route": "/audit",
+      "filter": {
+        "type": "request"
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 1400
+      },
+      "capturedAt": "2026-10-23T13:17:24.669Z",
+      "tlsVerification": true,
+      "filename": "audit-detail.png",
+      "sha256": "05a590733797cc9330e61cdbc2a9bf4e955b1479161363a08bfe8002b31397fc",
+      "imageSize": {
+        "width": 1440,
+        "height": 1400
+      }
+    }
+  ]
+}

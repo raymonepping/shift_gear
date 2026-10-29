@@ -1,0 +1,14 @@
+---
+# addons/rotation/ansible/rotation-verify.yml — read-only proof that the add-on
+# works: controller ready and authenticated, every secret onboarded and
+# enforced, one rotation observed, operator inheritance proven.
+- name: KV rotation add-on — verify
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files: [vars.yml]
+  pre_tasks:
+    - name: Preamble
+      ansible.builtin.import_tasks: tasks/preamble.yml
+  roles:
+    - sg_rotation_proof

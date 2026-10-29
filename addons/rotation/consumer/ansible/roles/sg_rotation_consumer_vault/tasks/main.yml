@@ -1,0 +1,37 @@
+---
+# The Vault Agent's Kubernetes auth role (sg-ansible-platform). Read first,
+# write only when absent or different.
+- name: Configure the Secure Door's Kubernetes auth role
+  module_defaults:
+    ansible.builtin.uri:
+      ca_path: "{{ sg_rotation_consumer_vault_ca }}"
+      headers:
+        X-Vault-Token: "{{ sg_vault_token }}"
+        X-Vault-Namespace: "{{ sg_rotation_consumer_vault_namespace }}"
+  no_log: true
+  block:
+    - name: Read the role
+      ansible.builtin.uri:
+        url: "{{ sg_rotation_consumer_vault_addr }}/v1/auth/kubernetes/role/sg-rotation-consumer"
+        status_code: [200, 404]
+      check_mode: false
+      register: sg_rotation_consumer_vault_role
+
+    - name: Write the role when absent or changed
+      ansible.builtin.uri:
+        url: "{{ sg_rotation_consumer_vault_addr }}/v1/auth/kubernetes/role/sg-rotation-consumer"
+        method: POST
+        body_format: json
+        body: "{{ sg_rotation_consumer_k8s_role }}"
+        status_code: [200, 204]
+      changed_when: true
+      when: >-
+        sg_rotation_consumer_vault_role.status == 404 or
+        (sg_rotation_consumer_vault_role.json.data.audience | default('', true)) != sg_rotation_consumer_k8s_role.audience or
+        (sg_rotation_consumer_vault_role.json.data.token_ttl | default(0) | int) != sg_rotation_consumer_k8s_role.token_ttl or
+        (sg_rotation_consumer_vault_role.json.data.token_max_ttl | default(0) | int) != sg_rotation_consumer_k8s_role.token_max_ttl or
+        (sg_rotation_consumer_vault_role.json.data.policies | default([]) | sort) != (sg_rotation_consumer_k8s_role.policies | sort) or
+        (sg_rotation_consumer_vault_role.json.data.bound_service_account_names | default([]) | sort)
+          != (sg_rotation_consumer_k8s_role.bound_service_account_names | sort) or
+        (sg_rotation_consumer_vault_role.json.data.bound_service_account_namespaces | default([]) | sort)
+          != (sg_rotation_consumer_k8s_role.bound_service_account_namespaces | sort)

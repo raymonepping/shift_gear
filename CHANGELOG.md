@@ -10,6 +10,14 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- KV v2 value rotation add-on (`addons/rotation/`, ADR D17). Install it with `make rotation-up` and remove it with `make rotation-down`; every managed secret and its history stay in Vault. See [docs/rotation.md](docs/rotation.md).
+- Per-type rotation policies (generator, schedule, `max_age`, `min_length`, `max_reads`) in `addons/rotation/rotation.yaml`, validated by Terraform, `make rotation-validate` and the controller.
+- Time-, usage- (Vault audit stream) and event-based rotation: human requests, which Vault authorises, and Vault event notifications with a durable version checkpoint.
+- Enforcement by reconciliation and Vault ACL, and compliance reporting (`make rotation-report`, also correct while the controller is down).
+- Engines › Rotation in the console: version timeline with fingerprints, compliance, and Rotate now when Vault allows it.
+- Secure Door consumer and board (`make rotation-consumer-*`): a Vault Agent–fed app that hot-reloads rotated KV v2 values without restarting, with a fictional door and a Vault daylight glass board at `secure-door.<apps_domain>`. See [addons/rotation/consumer/README.md](addons/rotation/consumer/README.md).
+- `make rotation-test`: 11 live scenarios plus a leak check. `make rotation-validate` runs in CI. Scenario 10 shows the demo rotation.
+
 - Live seal-chain observation shared by the topbar and Fleet/Cluster diagrams: bounded TLS-verified member health, named Agent readiness, 15-second foreground polling, 30-second expiry and fail-closed status; no telemetry dependency or additional Vault credential. See [validation](docs/seal-chain-observation.md).
 
 - C02/C03 local acceptance: 43/43 live steps, 148/148 standard browser tests, dedicated failover and all nine scenarios; repository telemetry defaults remain disabled.

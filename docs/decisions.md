@@ -227,3 +227,116 @@ An HAProxy sidecar redirects only the exact root path to
 with backend certificate verification. The Route stays reencrypt and its
 Service targets proxy port 8444. `KC_HOSTNAME_ADMIN` is absent; changing the
 admin hostname did not implement the requested landing page and broke startup.
+
+## D17 — The rotation add-on: KV v2 value rotation as a removable sixth Terraform root
+
+**Question:** How does Shift Gear gain automated, observable KV v2 secret
+rotation (per-type schedules; time, usage and event triggers; enforcement;
+compliance reporting) without changing the core lab, its 13 phases or its
+tool boundary, and so that it can be removed again?
+
+**Evidence:** KV v2 versions secrets but does not rotate them. The core
+phase list, the convergence digest, `make boundary` (19 rows) and the
+idempotency exceptions are fixed contracts (`scripts/phases.txt`,
+`scripts/input-digest.py`, `scripts/boundary-check.sh`,
+`tests/test_must_contracts.py`). Live probes on 2026-10-28
+(`addons/rotation/ASSESSMENT.md`): `sg-tf-platform` may write `sg-rotation-*`
+ACL policies but no Sentinel EGP; `sg-ansible-platform` may write the
+Kubernetes auth role, identity groups and KV data, but only read KV
+metadata; the audit collector exposes `id`, `time`, `type`, `operation`,
+`namespace`, `path`, `displayName` per entry; per-pod ingress policies in
+`sg-vault` and `sg-app` accept additive allows; Vault 2.1 Enterprise ships
+event notifications and Sentinel.
+
+**Decision:** An add-on under `addons/rotation/`, outside the convergence
+digest, in namespace `sg-rotation`, with its own Terraform root
+(`addons/rotation/terraform`, state `.secrets/terraform/rotation/`) that is
+not in `phases.txt`. It rotates **values inside Vault**, not credentials at
+an issuing system. A stateless Python standard-library controller (ConfigMap
+on a pinned UBI 9 Python image, the D15 pattern) with a `vault-agent`
+sidecar writes new KV v2 versions with check-and-set under
+`kv/shift-gear/rotation/<type>/<name>`. Vault is the only store: history is
+KV v2 versions plus custom metadata (fingerprints, triggers, actors); no
+database. Humans request rotations by patching custom metadata with their
+own token, so Vault decides who may ask. `make rotation-down` removes the
+add-on and keeps every managed secret and its history.
+
+Core touch points are an allow-list: `Makefile` (include line, the
+`rotation-proof` help text), `scripts/tf-run.sh` (the add-on root),
+`scripts/check.sh` (substrate grep over `addons/*/terraform`),
+`scripts/down.sh` (scale and reset hooks), `ui/**` (Engines › Rotation),
+`.github/workflows/quality.yml`, `scenarios/10_kv_rotation/` and the docs.
+D18 records the one bootstrap-policy change (Sentinel). `make boundary`
+stays at 19 rows.
+
+Fallbacks: if an external group cannot be a member of the add-on's
+internal group, the add-on policy is attached to the `*-operators`
+external groups in the core identity configuration (a core touch). If
+event subscription is refused, event-driven rotation runs from a 10-second
+metadata poll and is labelled "polling". A CLI rotation request (`make rotation-rotate`) goes through the
+controller's loopback-only request endpoint via `oc exec`: the Ansible token
+may only read KV metadata, and a root-namespace token cannot carry the
+namespace's operator policy, so the operator's authority there is Kubernetes
+RBAC on `pods/exec` in `sg-rotation`, and the controller records the request in
+Vault with that provenance (`cli:<user> via kubernetes exec`).
+
+## D18 — Sentinel EGP enforces KV value-rotation policy; one narrow bootstrap grant
+
+**Question:** How is "only the rotation controller sets a managed value, and
+every value meets its type's policy" enforced when broader core grants already
+reach the managed prefix?
+
+**Evidence:** `rotation-test` s06 (2026-10-28) recorded that the core policy
+`sg-engineer` and the platform automation token `sg-ansible-platform` both hold
+create/read/update on `kv/data/shift-gear/*`, which includes
+`kv/shift-gear/rotation/**`. An ACL policy can only add capabilities; the
+add-on cannot narrow a broader grant. ACL also cannot inspect a value. The
+licence includes Sentinel (`.build/terraform/platform.json`). `sg-tf-platform`
+had no right on `sys/policies/egp/*` (ASSESSMENT P1).
+
+**Decision:** The add-on root manages one Endpoint Governing Policy,
+`sg-rotation-kv` (hard-mandatory), on `kv/data/shift-gear/rotation/*` and
+`kv/metadata/shift-gear/rotation/*`. It is rendered from `rotation.yaml`, so
+schedule, generator and enforcement share one source. The EGP refuses:
+
+- a value write that does not come from the controller. "The controller" means
+  its policy *and* the Kubernetes auth token metadata of ServiceAccount
+  `sg-rotation/rotation-controller`; a policy name alone could be attached
+  elsewhere;
+- a value write without check-and-set;
+- a value outside its type's minimum length or the generator's alphabet;
+- any metadata write by someone else, except a patch that touches only
+  `custom_metadata.rotation_request`;
+- any metadata delete.
+
+**The core touch:** the operator approved one grant in
+`policies/bootstrap/sg-tf-platform.hcl`:
+`shift-gear/sys/policies/egp/sg-rotation-*` (create, read, update, delete).
+The name prefix keeps every other EGP out of Terraform's reach. Bootstrap
+policies are written by Ansible `bootstrap` with the root token, so the grant
+lands on the next `make lab`. `make boundary` keeps its 19 rows.
+
+**Limits:**
+- Root tokens are not subject to EGPs (break-glass by design).
+- Reads are not governed: engineers may still read managed values, per the
+  core design.
+- `make rotation-down` removes the EGP with the rest of the add-on, and with
+  it the enforcement.
+
+**Outcome (2026-10-28):** applied and live. `rotation-test` s12 shows 403 for
+the platform token, an engineer, operator tampering and a too-short
+controller value; a `rotation_request` patch is still allowed and rotations
+continue. The capability check shows `sg-tf-platform` holds the grant only
+for `shift-gear/sys/policies/egp/sg-rotation-*` (deny for other names and in
+the root namespace). Two `make lab` runs converged the grant; verify,
+boundary 19/19, drift, secret scan and the full UI suite (169) passed.
+
+**D17 addendum (2026-10-28, prompt 01_09):** two more touch points, both made
+general so later add-ons need no edit:
+- `scripts/tf-run.sh` maps `rotation-<part>` to `addons/rotation/<part>/terraform`
+  (tf-platform token, `destroy-auto` allowed);
+- `scripts/down.sh` scales and resets every namespace labelled
+  `shift-gear/addon`, instead of a hard-coded `sg-rotation`.
+
+The Secure Door consumer (`sg-rotation-consumer`) has its own root and state,
+and one managed secret entry (`api-key/secure-door`) in `rotation.yaml`.
