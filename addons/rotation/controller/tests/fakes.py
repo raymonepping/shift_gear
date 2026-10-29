@@ -82,5 +82,14 @@ class FakeVault:
         n = version or e["meta"]["current_version"]
         return (e["versions"].get(n) or {}).get("value")
 
+    def list_metadata(self, rel):
+        prefix = rel.rstrip("/") + "/"
+        keys = set()
+        for path in self.entries:
+            if path.startswith(prefix):
+                rest = path[len(prefix):]
+                keys.add(rest.split("/")[0] + "/" if "/" in rest else rest)
+        return sorted(keys)
+
     def lookup_self(self):
         return {"display_name": self.display_name, "policies": ["sg-rotation-controller"]}

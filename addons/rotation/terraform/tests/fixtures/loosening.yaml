@@ -8,4 +8,4 @@ rotation:
       schedule: { interval: 60s }
       policy: { max_age: 5m, min_length: 32 }
   secrets:
-    - { name: demo, type: api-key, strategies: [time], interval: 10m }
+    - { name: demo, type: api-key, owner: application, strategies: [time], interval: 10m }

@@ -1,11 +1,12 @@
 ---
-# Read-only proof. The consumer's own status is compared with Vault's metadata
-# (read with the Ansible token) — never trusted on its word alone. Values are
+# Read-only proof. Each party's own status is compared with Vault's metadata
+# (read with the Ansible token), never trusted on its word alone. Values are
 # never read here: only versions.
 
-- name: Wait for the Secure Door rollout (all four containers ready)
+- name: Wait for both parties and the board to roll out
   ansible.builtin.command:
-    argv: [oc, -n, "{{ sg_rotation_consumer_k8s_namespace }}", rollout, status, deploy/secure-door, --timeout=180s]
+    argv: [oc, -n, "{{ sg_rotation_consumer_k8s_namespace }}", rollout, status, "deploy/{{ item }}", --timeout=180s]
+  loop: [door-verifier, door-client, door-board]
   changed_when: false
   check_mode: false
 
@@ -20,10 +21,11 @@
   check_mode: false
   no_log: true
 
-- name: The consumer loaded a version the Agent rendered, and reports current
+- name: Each party loaded a version its own Agent rendered, and reports current
   ansible.builtin.command:
-    argv: [oc, -n, "{{ sg_rotation_consumer_k8s_namespace }}", exec, deploy/secure-door, -c, consumer, --,
+    argv: [oc, -n, "{{ sg_rotation_consumer_k8s_namespace }}", exec, "deploy/door-{{ item }}", -c, "{{ item }}", --,
            python3, -c, "{{ sg_rotation_consumer_proof_read_status }}"]
+  loop: "{{ sg_rotation_consumer_proof_parties }}"
   register: sg_rotation_consumer_proof_status
   changed_when: false
   check_mode: false
@@ -32,12 +34,14 @@
   until: >-
     sg_rotation_consumer_proof_status.rc == 0 and
     (sg_rotation_consumer_proof_status.stdout | from_json).state == 'current' and
-    ((sg_rotation_consumer_proof_status.stdout | from_json).version | int) >= (sg_rotation_consumer_proof_meta.json.data.current_version | int) - 1
+    ((sg_rotation_consumer_proof_status.stdout | from_json).version | int) >= (sg_rotation_consumer_proof_meta.json.data.current_version | int) - 1 and
+    (item != 'client' or (sg_rotation_consumer_proof_status.stdout | from_json).last == 'GRANTED')
 
-- name: The consumer container holds no Vault token and no Vault settings
+- name: The party containers hold no Vault token and no Vault settings
   ansible.builtin.command:
-    argv: [oc, -n, "{{ sg_rotation_consumer_k8s_namespace }}", exec, deploy/secure-door, -c, consumer, --,
+    argv: [oc, -n, "{{ sg_rotation_consumer_k8s_namespace }}", exec, "deploy/door-{{ item }}", -c, "{{ item }}", --,
            python3, -c, "{{ sg_rotation_consumer_proof_isolation_check }}"]
+  loop: "{{ sg_rotation_consumer_proof_parties }}"
   register: sg_rotation_consumer_proof_isolation
   changed_when: false
   check_mode: false
@@ -61,8 +65,8 @@
       {{ {
         'verified_at': now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ'),
         'vault_current_version': sg_rotation_consumer_proof_meta.json.data.current_version,
-        'consumer': sg_rotation_consumer_proof_status.stdout | from_json,
-        'consumer_has_token_or_vault_env': false,
+        'parties': dict(sg_rotation_consumer_proof_parties | zip(sg_rotation_consumer_proof_status.results | map(attribute='stdout') | map('from_json'))),
+        'party_has_token_or_vault_env': false,
         'board_url': sg_rotation_consumer_board_url
       } | to_nice_json }}
   changed_when: false

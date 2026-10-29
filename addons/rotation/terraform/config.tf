@@ -24,6 +24,7 @@ locals {
     rel_path   = "${local.prefix}/${s.type}/${s.name}"
     type       = s.type
     strategies = lookup(s, "strategies", ["time"])
+    owner      = lookup(s, "owner", "")
     interval   = lookup(local.seconds, "secret:${s.type}/${s.name}:interval", local.seconds["type:${s.type}:interval"])
     max_age    = local.seconds["type:${s.type}:max_age"]
     events     = [for e in lookup(s, "events", []) : { match = e.match, path = trim(e.path, "/") }]
@@ -71,6 +72,10 @@ resource "terraform_data" "config_contract" {
     precondition {
       condition     = alltrue([for s in local.secrets : length(s.events) <= 8 && length(join(",", [for e in s.events : "${e.path}@1000000000"])) <= 480])
       error_message = "At most 8 event rules per secret, and the version checkpoint must fit in 480 bytes (custom metadata values hold 512)."
+    }
+    precondition {
+      condition     = alltrue([for s in local.secrets : s.owner == "application"])
+      error_message = "Every secret must declare owner: application. Vault-native credentials belong to their engine (signing keys: Transit); external-provider credentials must be rotated by the provider."
     }
     precondition {
       condition     = alltrue([for s in local.secrets : contains(s.strategies, "time")])

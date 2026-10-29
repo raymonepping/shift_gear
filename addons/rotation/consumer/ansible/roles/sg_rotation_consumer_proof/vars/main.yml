@@ -1,9 +1,14 @@
 ---
-# One-liners run inside the consumer container (read status / inspect isolation; never a value).
+# One-liners run inside a party container (read its own /status; inspect
+# isolation; never a value).
 sg_rotation_consumer_proof_read_status: >-
-  import json;d=json.load(open('/status/state.json'));c=d['consumer'];
-  print(json.dumps({'version':c['version'],'state':c['state'],'probe':d['vault']['probe']}))
+  import json,urllib.request;d=json.load(urllib.request.urlopen('http://127.0.0.1:9090/status',timeout=3));
+  b=d.get('verifier') or d.get('client');
+  print(json.dumps({'role':d['role'],'version':b.get('version',b.get('current_version')),'state':b['state'],
+  'probe':d['vault']['probe'],'mode':b.get('mode'),'ring':[k['version'] for k in b.get('ring',[])],
+  'last':(b.get('last') or {}).get('verdict')}))
 sg_rotation_consumer_proof_isolation_check: >-
   import os,glob;
   print(int(any(k.startswith('VAULT_') for k in os.environ)),
   int(bool(glob.glob('/var/run/secrets/**/token', recursive=True))))
+sg_rotation_consumer_proof_parties: [verifier, client]

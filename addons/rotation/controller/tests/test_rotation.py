@@ -23,6 +23,7 @@ from rotation.config import ConfigError, parse, parse_duration  # noqa: E402
 from rotation.events import EventTail, normalise, parse_line  # noqa: E402
 from rotation.generators import generate, policy_violations  # noqa: E402
 from rotation.redact import REGISTRY, configure_logging, fingerprint  # noqa: E402
+from rotation import vault as vault_mod  # noqa: E402
 from rotation.usage import UsageCounter  # noqa: E402
 from rotation.vault import iso_precise, parse_time  # noqa: E402
 
@@ -45,8 +46,8 @@ def doc(**overrides) -> dict:
                                      "schedule": {"interval": "10m"}, "policy": {"max_age": "30m", "min_length": 20}},
             },
             "secrets": [
-                {"name": "demo", "type": "api-key", "strategies": ["time", "usage", "event"], "usage": {"max_reads": 3}},
-                {"name": "session-signing", "type": "signing-key", "strategies": ["time", "event"],
+                {"name": "demo", "type": "api-key", "owner": "application", "strategies": ["time", "usage", "event"], "usage": {"max_reads": 3}},
+                {"name": "session-signing", "type": "signing-key", "owner": "application", "strategies": ["time", "event"],
                  "events": [{"match": "kv-v2/data-*", "path": "shift-gear/config/app-config"}]},
             ],
         }
@@ -137,13 +138,27 @@ class ConfigTests(unittest.TestCase):
 
     def test_custom_metadata_key_budget(self):
         from rotation.config import MAX_VERSIONS_LIMIT, SUMMARY_KEYS
-        summary = [h.MANAGED_BY, h.TYPE, h.STRATEGIES, h.LAST_ROTATED, h.LAST_TRIGGER,
-                   h.READS_SINCE, h.READS_CURSOR, h.REQUEST, h.SERVED, h.WATCH]
+        summary = [h.MANAGED_BY, h.TYPE, h.OWNER, h.STRATEGIES, h.LAST_ROTATED, h.LAST_TRIGGER,
+                   h.READS_SINCE, h.READS_CURSOR, h.REQUEST, h.SERVED, h.WATCH, h.RETIRED_AT]
         self.assertEqual(len(summary), SUMMARY_KEYS)
         self.assertLessEqual(MAX_VERSIONS_LIMIT + SUMMARY_KEYS, 64)
         record = h.Record(10**6, "f" * 12, "recovered", "2026-10-28T11:16:00Z", "x" * 500).encode()
         self.assertLessEqual(len(record.encode()), 512)
         self.assertLessEqual(len(h.encode_request("u" * 100, "a" * 500, "r" * 500).encode()), 512)
+
+    def test_owner_is_declared_and_must_be_application(self):
+        for owner, needle in ((None, "declare who owns the credential"),
+                              ("vault-native", "use the matching Vault engine"),
+                              ("external-provider", "breaks authentication"),
+                              ("someone", "is not one of")):
+            d = doc()
+            if owner is None:
+                d["rotation"]["secrets"][0].pop("owner")
+            else:
+                d["rotation"]["secrets"][0]["owner"] = owner
+            with self.assertRaisesRegex(ConfigError, needle):
+                parse(d)
+        self.assertEqual(parse(doc()).secrets[0].owner, "application")
 
     def test_duplicate_and_names(self):
         d = doc()
@@ -219,7 +234,7 @@ class TriggerTests(unittest.TestCase):
         self.assertEqual([t.kind for t in due], ["request", "usage", "time"])
 
     def test_strategy_not_enabled_is_ignored(self):
-        batch = parse(doc(secrets=[{"name": "b", "type": "api-key", "strategies": ["time"]}])).secrets[0]
+        batch = parse(doc(secrets=[{"name": "b", "type": "api-key", "owner": "application", "strategies": ["time"]}])).secrets[0]
         self.assertIsNone(triggers.decide(batch, self.state(age=10, reads=99, request=("u", "a", "r")), self.clock.now))
 
     def test_usage_not_reported_never_triggers(self):
@@ -347,7 +362,7 @@ class ControllerTests(unittest.TestCase):
         rec = h.decode(self.md().custom)[2]
         self.assertEqual((rec.trigger, rec.actor), ("request", "cli:raymon via kubernetes exec"))
         with self.assertRaisesRegex(ValueError, "strategy 'event' is not enabled"):
-            ctl.Controller(parse(doc(secrets=[{"name": "b", "type": "api-key", "strategies": ["time"]}])),
+            ctl.Controller(parse(doc(secrets=[{"name": "b", "type": "api-key", "owner": "application", "strategies": ["time"]}])),
                            self.vault, None, None, self.logger).request("api-key/b", "x", "y")
 
     def test_cascade_event_via_watched_version(self):
@@ -455,6 +470,42 @@ class ControllerTests(unittest.TestCase):
         rec = h.decode(self.md().custom)[2]
         self.assertEqual(rec.trigger, "recovered")
         self.assertEqual(rec.fingerprint, fingerprint(self.vault.read_value("shift-gear/rotation/api-key/demo", 2)))
+
+    def test_owner_recorded_and_compliance_checks_it(self):
+        self.ctl.loop_once()
+        self.assertEqual(self.md().custom[h.OWNER], "application")
+        self.vault.patch_metadata("shift-gear/rotation/api-key/demo", {h.OWNER: None})
+        demo = compliance.evaluate(self.cfg.secret("api-key/demo"), self.cfg, self.md(), self.clock.now)
+        self.assertTrue(any("owner in Vault" in r for r in demo["reasons"]))
+        self.ctl.loop_once()                       # reconcile restores it
+        self.assertEqual(self.md().custom[h.OWNER], "application")
+
+    def test_secret_removed_from_config_is_retired_not_deleted(self):
+        self.ctl.loop_once()
+        smaller = parse(doc(secrets=[doc()["rotation"]["secrets"][0]]))   # session-signing removed
+        c2 = ctl.Controller(smaller, self.vault, None, None, self.logger)
+        c2.loop_once()
+        md = self.md("shift-gear/rotation/signing-key/session-signing")
+        self.assertNotIn(h.MANAGED_BY, md.custom)
+        self.assertIn(h.RETIRED_AT, md.custom)
+        self.assertEqual(md.current_version, 1, "value and versions kept")
+        self.assertIn(1, h.decode(md.custom), "history kept")
+        self.ctl.loop_once()                       # configured again -> managed again
+        md = self.md("shift-gear/rotation/signing-key/session-signing")
+        self.assertEqual(md.custom[h.MANAGED_BY], h.MANAGED_BY_VALUE)
+        self.assertNotIn(h.RETIRED_AT, md.custom)
+
+    def test_retire_scan_runs_on_the_first_loop_that_reaches_vault(self):
+        # Loop 1 waits for Vault (live: the Agent is not ready yet); loop 2 must still retire.
+        self.ctl.loop_once()
+        smaller = parse(doc(secrets=[doc()["rotation"]["secrets"][0]]))
+        c2 = ctl.Controller(smaller, self.vault, None, None, self.logger)
+        real = self.vault.lookup_self
+        self.vault.lookup_self = lambda: (_ for _ in ()).throw(vault_mod.Unreachable("auth/token/lookup-self: URLError"))
+        c2.loop_once()
+        self.vault.lookup_self = real
+        c2.loop_once()
+        self.assertIn(h.RETIRED_AT, self.md("shift-gear/rotation/signing-key/session-signing").custom)
 
     def test_reconcile_enforces_settings(self):
         self.ctl.loop_once()

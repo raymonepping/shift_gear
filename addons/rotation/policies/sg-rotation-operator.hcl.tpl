@@ -5,3 +5,9 @@
 path "${mount}/metadata/${prefix}/*" {
   capabilities = ["read", "list", "patch"]
 }
+
+# The natively rotated signing key (Transit, prompt 01_10): key metadata only
+# (versions, auto_rotate_period; ed25519 returns public keys). No sign/verify.
+path "transit/keys/session-signing" {
+  capabilities = ["read"]
+}

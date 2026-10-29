@@ -340,3 +340,37 @@ general so later add-ons need no edit:
 
 The Secure Door consumer (`sg-rotation-consumer`) has its own root and state,
 and one managed secret entry (`api-key/secure-door`) in `rotation.yaml`.
+
+**D17 addendum (2026-10-29, prompt 01_10): ownership, and one Transit key in
+the core.** KV value rotation changes trust only when the application issues
+and verifies the credential. Every managed secret now declares `owner:`, and
+only `application` is accepted (Terraform precondition, `rotation-validate`
+and the controller). `vault-native` and `external-provider` are refused with a
+message that names the right alternative.
+
+The former KV secret `signing-key/session-signing` became a **Transit key**,
+`transit/keys/session-signing` (ed25519, `exportable = false`,
+`allow_plaintext_backup = false`, `auto_rotate_period = 3600`, Transit's
+minimum). Vault rotates it natively and keeps every version for verification.
+
+- **Owner: the core `platform` root**, not the add-on. The add-on's state never
+  holds the key, so `make rotation-down` cannot remove it. This adds one
+  resource to a core root (the third core touch point after the bootstrap
+  grant of D18 and the generalisations above).
+- **Three layers keep it:** `deletion_allowed = false` in Vault,
+  `prevent_destroy` in Terraform, and, per D11, an exact-path rule in
+  `sg-tf-platform` for `shift-gear/transit/keys/session-signing` with
+  create, read and update but no delete. The exact path wins over
+  `transit/keys/*`. The token can still write the key's `config` (Terraform
+  sets `auto_rotate_period` and `deletion_allowed` there), but even with
+  `deletion_allowed` flipped it has no delete on the key itself.
+- **The KV secret is retired, not deleted.** The controller marks it
+  `rotation_retired_at`, clears `rotation_managed_by` and stops rotating it.
+  Its versions and history stay readable in Vault.
+- The operator and auditor rotation policies gained `read` on the key's
+  metadata, so the console can show it next to the KV secrets with the
+  signed-in person's own token.
+
+The Secure Door became two parties (`door-verifier`, `door-client`), each with
+its own ServiceAccount, Kubernetes auth role and read-only policy. The 01_09
+role `sg-rotation-consumer` is removed by the consumer's own Ansible on up.

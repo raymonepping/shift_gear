@@ -66,6 +66,13 @@ path "shift-gear/transit/keys/*" {
   capabilities = ["create", "read", "update", "delete"]
 }
 
+# D11 for the natively rotated signing key (prompt rotation/01_10): the exact
+# path wins over transit/keys/*, so Terraform may create and configure it but
+# never delete it — prevent_destroy is the first line, this is the second.
+path "shift-gear/transit/keys/session-signing" {
+  capabilities = ["create", "read", "update"]
+}
+
 path "shift-gear/transit/keys/+/config" {
   capabilities = ["create", "read", "update"]
 }

@@ -59,6 +59,25 @@ resource "vault_transit_secret_backend_key" "app_data" {
   }
 }
 
+# Session signing key: a signing key is not a KV secret. Vault rotates it
+# natively (auto_rotate_period) and keeps every version for verification, so
+# the KV rotation add-on does not manage it (prompt rotation/01_10, D17
+# addendum). Owned here because keys outlive any add-on.
+resource "vault_transit_secret_backend_key" "session_signing" {
+  namespace              = vault_namespace.shift_gear.path_fq
+  backend                = vault_mount.transit.path
+  name                   = "session-signing"
+  type                   = "ed25519"
+  exportable             = false
+  allow_plaintext_backup = false
+  deletion_allowed       = false
+  auto_rotate_period     = 3600
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
 # ── PKI root CA ───────────────────────────────────────────────────────────────
 resource "vault_mount" "pki" {
   namespace   = vault_namespace.shift_gear.path_fq

@@ -61,13 +61,15 @@ up)
       die "${SECRET} does not exist and the rotation add-on is not installed — run make rotation-up first"
     fi
   fi
-  info "Secure Door: Vault configuration (the Agent's Kubernetes auth role)"
+  info "Secure Door: Vault configuration (one Kubernetes auth role per party)"
   playbook configure
-  info "Secure Door: Terraform (namespace, pod, board Route, NetworkPolicies, read-only policy)"
-  "${TF}" rotation-consumer apply -no-color >"${BUILD_DIR}/addons/rotation/consumer-tf-apply.log" 2>&1 ||
+  mode="grace ${GRACE:-30}s"
+  [[ "${GRACE:-30}" == 0 ]] && mode="strict"
+  info "Secure Door: Terraform (verifier, client, board, Route, NetworkPolicies, two read-only policies; ${mode})"
+  "${TF}" rotation-consumer apply -no-color ${GRACE:+-var=grace_seconds=${GRACE}} >"${BUILD_DIR}/addons/rotation/consumer-tf-apply.log" 2>&1 ||
     { tail -40 "${BUILD_DIR}/addons/rotation/consumer-tf-apply.log" >&2; die "terraform apply (rotation-consumer) failed"; }
   grep -E '^(Apply complete|No changes)' "${BUILD_DIR}/addons/rotation/consumer-tf-apply.log" || true
-  info "Secure Door: proof (Agent rendered, consumer current vs Vault, isolation, board over TLS)"
+  info "Secure Door: proof (each party current vs Vault, client granted, isolation, board over TLS)"
   playbook verify
   ok "Secure Door is up — board: $(board_url)   logs: make rotation-consumer-logs"
   ;;
@@ -87,30 +89,45 @@ down)
 
 status)
   if ! installed; then echo "Secure Door consumer: not installed (make rotation-consumer-up)"; exit 2; fi
-  oc -n "${NS}" get pods -l app.kubernetes.io/name=secure-door -o wide
-  oc -n "${NS}" exec -i deploy/secure-door -c consumer -- python3 - <<'PY' || echo "status not available yet"
-import json
-d = json.load(open("/status/state.json"))
-c, v, a, door, lat = d["consumer"], d["vault"], d["agent"], d.get("door") or {}, d["latency"]
+  oc -n "${NS}" get pods -l 'app.kubernetes.io/name in (door-verifier,door-client,door-board)' -o wide
+  for party in verifier client; do
+    oc -n "${NS}" exec -i "deploy/door-${party}" -c "${party}" -- python3 - <<'PY' || echo "${party}: status not available yet"
+import json, urllib.request
+d = json.load(urllib.request.urlopen("http://127.0.0.1:9090/status", timeout=3))
+v, a = d["vault"], d["agent"]
 lr = a["last_refresh"]
-print("credential  v%s fp=%s state=%s (%s) pid=%s since %s" % (c["version"], c["fingerprint"], c["state"], c["reason"], c["pid"], c["started_at"]))
-print("refresh     " + ("last success %s (%s)" % (lr["at"], lr["source"]) if lr["observable"]
-                        else "not observable; last change rendered %s" % a["last_change_rendered_at"]))
-print("vault       %s (%s) - reachability only" % (v["probe"], v["detail"]))
-print("door        %s v%s - %s" % (door.get("last_verdict", "-"), door.get("version", "-"), door.get("meaning", "-")))
-f, r = lat["vault_to_file_s"], lat["file_to_reload_s"]
-print("latency     vault->file p50=%s max=%s n=%s   file->reload p50=%s max=%s n=%s" % (f["p50"], f["max"], f["n"], r["p50"], r["max"], r["n"]))
+refresh = "last success %s" % lr["at"] if lr["observable"] else "not observable; last change rendered %s" % a["last_change_rendered_at"]
+if d["role"] == "verifier":
+    b = d["verifier"]
+    ring = ", ".join("v%s%s" % (k["version"], " (current)" if k["current"] else " until %s" % k["retires_at"]) for k in b["ring"])
+    print("verifier    mode=%s grace=%ss ring=[%s] state=%s since %s" % (b["mode"], int(b["grace_seconds"]), ring, b["state"], d["started_at"]))
+    print("            decisions %s" % (", ".join("%s=%s" % kv for kv in sorted(b["verdicts"].items())) or "none yet"))
+else:
+    b = d["client"]
+    last = b.get("last") or {}
+    print("client      v%s fp=%s state=%s (%s) since %s" % (b["version"], b["fingerprint"], b["state"], b["reason"], d["started_at"]))
+    print("            last %s v%s (%s); outcomes %s" % (last.get("verdict", "-"), last.get("version", "-"), last.get("reason", "-"),
+          ", ".join("%s=%s" % kv for kv in sorted(b["outcomes"].items())) or "none"))
+    w = b["windows"]
+    print("            denial windows %d%s" % (len(w), "; last %s denied in %ss (%s)" % (w[0]["denied"], w[0]["seconds"], w[0]["reason"]) if w else ""))
+    f, r = b["latency"]["vault_to_file_s"], b["latency"]["file_to_reload_s"]
+    print("            vault->file p50=%s max=%s n=%s   file->reload p50=%s max=%s n=%s" % (f["p50"], f["max"], f["n"], r["p50"], r["max"], r["n"]))
+print("            refresh %s; vault %s (%s), reachability only" % (refresh, v["probe"], v["detail"]))
 PY
+  done
   echo "board       $(board_url)"
   ;;
 
 logs)
   installed || die "Secure Door consumer not installed"
-  container=consumer
-  case "${C:-}" in agent) container=vault-agent ;; probe) container=vault-probe ;; board) container=board ;; esac
+  party="${P:-client}"
+  [[ "${party}" == verifier || "${party}" == client || "${party}" == board ]] || die "P must be verifier, client or board"
+  container="${party}"
+  case "${C:-}" in agent) container=vault-agent ;; probe) container=vault-probe ;; esac
+  [[ "${party}" == board ]] && container=board
   follow=(-f)
   [[ "${F:-1}" == 0 ]] && follow=()
-  exec oc -n "${NS}" logs deploy/secure-door -c "${container}" --tail=100 ${follow[@]+"${follow[@]}"}
+  exec oc -n "${NS}" logs "deploy/door-${party}" -c "${container}" --tail=100 ${follow[@]+"${follow[@]}"}
   ;;
 
 test)

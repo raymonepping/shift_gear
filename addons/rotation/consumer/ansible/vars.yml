@@ -10,12 +10,24 @@ sg_rotation_consumer_secret_rel: shift-gear/rotation/api-key/secure-door
 sg_rotation_consumer_board_url: "https://secure-door.{{ infra_cluster.apps_domain }}"
 sg_rotation_consumer_build_dir: "{{ sg_rotation_consumer_root }}/.build/addons/rotation"
 
-# The Vault Agent's Kubernetes auth role: projected token (audience vault),
-# one read-only policy, declared in full (lesson 4).
-sg_rotation_consumer_k8s_role:
-  bound_service_account_names: ["secure-door"]
-  bound_service_account_namespaces: ["sg-rotation-consumer"]
-  audience: vault
-  policies: ["sg-rotation-consumer"]
-  token_ttl: 1200
-  token_max_ttl: 3600
+# One Kubernetes auth role per party: projected token (audience vault), one
+# read-only policy each, declared in full (lesson 4). The two parties never
+# share an identity.
+sg_rotation_consumer_k8s_roles:
+  sg-rotation-door-verifier:
+    bound_service_account_names: ["door-verifier"]
+    bound_service_account_namespaces: ["sg-rotation-consumer"]
+    audience: vault
+    policies: ["sg-rotation-door-verifier"]
+    token_ttl: 1200
+    token_max_ttl: 3600
+  sg-rotation-door-client:
+    bound_service_account_names: ["door-client"]
+    bound_service_account_namespaces: ["sg-rotation-consumer"]
+    audience: vault
+    policies: ["sg-rotation-door-client"]
+    token_ttl: 1200
+    token_max_ttl: 3600
+
+# Roles of earlier layouts, removed on up and down (01_09 had one shared role).
+sg_rotation_consumer_retired_roles: ["sg-rotation-consumer"]

@@ -1,5 +1,6 @@
 // tests/screens.spec.ts — @screens: screenshot every page at 1440×900 and
 // 390×844 → docs/screenshots/ui/. Run with: make ui-screens
+// (SG_SCREENS=rotation,engines shoots only those pages, without sign-in/runtime-sources).
 import { mkdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { test } from '@playwright/test'
@@ -12,6 +13,7 @@ const SCREENS: [string, string][] = [
   ['fleet', '/'],
   ['layers', '/layers'],
   ['engines', '/engines'],
+  ['rotation', '/engines/rotation'],
   ['pods', '/pods'],
   ['routes', '/routes'],
   ['operator', '/operator'],
@@ -24,31 +26,37 @@ const SCREENS: [string, string][] = [
   ['explorer', '/explorer'],
 ]
 
+const ONLY = process.env.SG_SCREENS?.split(',').map(s => s.trim()).filter(Boolean)
+
 for (const [w, h, suffix] of [[1440, 900, 'desktop'], [390, 844, 'mobile']] as const) {
   test(`@screens ${suffix}`, async ({ browser }) => {
     test.setTimeout(240_000)
     mkdirSync(OUT, { recursive: true })
 
     // Sign-in page (unauthenticated)
+    if (!ONLY) {
     const anon = await browser.newContext({ viewport: { width: w, height: h } })
     const lp = await anon.newPage()
     await lp.goto(`${BASE}/signin`)
     await lp.waitForLoadState('networkidle')
     await lp.screenshot({ path: `${OUT}/signin-${suffix}.png`, fullPage: true })
     await anon.close()
+    }
 
     // All app pages as ada
     const { context, page } = await pageAs(browser, 'ada', { viewport: { width: w, height: h } })
-    for (const [name, route] of SCREENS) {
+    for (const [name, route] of SCREENS.filter(([n]) => !ONLY || ONLY.includes(n))) {
       await page.goto(route)
       await page.waitForLoadState('networkidle')
       await page.waitForTimeout(1_200)
       await page.screenshot({ path: `${OUT}/${name}-${suffix}.png`, fullPage: true })
     }
-    await page.goto('/operator')
-    await page.locator('details.runtime-sources summary').click()
-    await page.waitForLoadState('networkidle')
-    await page.screenshot({ path: `${OUT}/runtime-sources-${suffix}.png`, fullPage: true })
+    if (!ONLY) {
+      await page.goto('/operator')
+      await page.locator('details.runtime-sources summary').click()
+      await page.waitForLoadState('networkidle')
+      await page.screenshot({ path: `${OUT}/runtime-sources-${suffix}.png`, fullPage: true })
+    }
     await context.close()
   })
 }

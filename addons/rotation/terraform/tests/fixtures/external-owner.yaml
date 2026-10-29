@@ -1,0 +1,11 @@
+# A SaaS key owned by an external provider — KV-only rotation would break it. Refused.
+rotation:
+  mount: kv
+  prefix: shift-gear/rotation
+  types:
+    api-key:
+      generator: { kind: chars, charset: alnum, length: 32 }
+      schedule: { interval: 60s }
+      policy: { max_age: 5m, min_length: 32 }
+  secrets:
+    - { name: saas, type: api-key, owner: external-provider, strategies: [time] }

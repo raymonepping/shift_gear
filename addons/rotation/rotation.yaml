@@ -9,6 +9,11 @@
 # production profile would use days (P7D/P30D/P90D style: 7d, 30d, 90d).
 # Validated by Terraform (preconditions), `make rotation-validate`, and the
 # controller at start-up — see addons/rotation/controller/rotation/config.py.
+#
+# Every secret declares `owner:`. Only `application` is accepted: KV rotation
+# changes trust only when the application issues and verifies the credential.
+# Vault-native credentials belong to their engine (signing keys: Transit), and
+# an external provider must issue its own new credential (prompt 01_10).
 
 rotation:
   mount: kv
@@ -23,10 +28,6 @@ rotation:
       schedule: { interval: 60s }
       policy: { max_age: 5m, min_length: 32, max_reads: 5 }
 
-    signing-key:
-      generator: { kind: bytes, bytes: 48, encoding: base64url }
-      schedule: { interval: 5m }
-      policy: { max_age: 15m, min_length: 64 }
 
     service-password:
       generator: { kind: password, length: 24, classes: [lower, upper, digit, symbol] }
@@ -37,25 +38,25 @@ rotation:
     # Time + usage + human request: the general-purpose demo secret.
     - name: demo
       type: api-key
+      owner: application
       strategies: [time, usage, event]
       usage: { max_reads: 3 }
 
-    # Time + cascade: rotates whenever the core app-config secret is written
-    # (make wl-a-rotate, or the console's operator rotate action).
-    - name: session-signing
-      type: signing-key
-      strategies: [time, event]
-      events:
-        - { match: "kv-v2/data-*", path: shift-gear/config/app-config }
 
     # Time only, slow cadence.
     - name: batch-runner
       type: service-password
+      owner: application
       strategies: [time]
 
-    # Watched by the Secure Door consumer (addons/rotation/consumer, prompt 01_09).
-    # Deliberately no usage strategy: its Vault Agent re-reads every few
-    # seconds, and usage-based rotation counts every audited reader.
+    # The Secure Door's shared HMAC secret (addons/rotation/consumer): owned by the
+    # application — its verifier issues trust and rejects old versions. Rotated on a
+    # schedule and on every application release (the core app-config is written).
+    # Deliberately no usage strategy: two Vault Agents re-read it every few seconds,
+    # and usage-based rotation counts every audited reader.
     - name: secure-door
       type: api-key
+      owner: application
       strategies: [time, event]
+      events:
+        - { match: "kv-v2/data-*", path: shift-gear/config/app-config }

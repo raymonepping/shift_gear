@@ -17,7 +17,8 @@ output "mounts" {
 output "transit_keys" {
   description = "Transit keys owned by Terraform."
   value = {
-    app_data = "${vault_mount.transit.path}/${vault_transit_secret_backend_key.app_data.name}"
+    app_data        = "${vault_mount.transit.path}/${vault_transit_secret_backend_key.app_data.name}"
+    session_signing = "${vault_mount.transit.path}/${vault_transit_secret_backend_key.session_signing.name}"
   }
 }
 

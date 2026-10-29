@@ -156,5 +156,13 @@ class Vault:
             raise
         return (data.get("data") or {}).get("value")
 
+    def list_metadata(self, rel: str) -> list[str]:
+        try:
+            return list((self.request("LIST", f"{self.mount}/metadata/{rel}").get("data") or {}).get("keys") or [])
+        except VaultError as exc:
+            if exc.status == 404:
+                return []
+            raise
+
     def lookup_self(self) -> dict:
         return self.request("GET", "auth/token/lookup-self").get("data") or {}

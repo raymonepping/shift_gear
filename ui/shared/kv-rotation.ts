@@ -130,6 +130,7 @@ export interface RotationSecretView {
   id: string
   path: string
   type: string
+  owner: string | null
   strategies: string[]
   intervalSeconds: number | null
   maxReads: number | null
@@ -155,4 +156,47 @@ export interface RotationResponse {
   types: Record<string, unknown> | null
   summary: Record<string, unknown> | null
   secrets: RotationSecretView[]
+  native: NativeKeyView[]
 }
+
+// ── Natively rotated by Vault (prompt 01_10) ────────────────────────────────
+
+export interface NativeKeyView {
+  name: string
+  engine: 'transit'
+  state: 'live' | 'denied' | 'unavailable'
+  latestVersion: number | null
+  autoRotateSeconds: number | null
+  lastRotated: string | null
+  versions: number
+}
+
+/** Parse a Transit key read (`transit/keys/<name>`). Public metadata only. */
+export function nativeKey(name: string, status: number, body: unknown): NativeKeyView {
+  const base = { name, engine: 'transit' as const, latestVersion: null, autoRotateSeconds: null, lastRotated: null, versions: 0 }
+  if (status === 403) return { ...base, state: 'denied' }
+  const data = (body as { data?: Record<string, unknown> } | null)?.data
+  if (status !== 200 || !data) return { ...base, state: 'unavailable' }
+  const keys = (data.keys ?? {}) as Record<string, unknown>
+  const created = Object.values(keys).map((v) => {
+    if (typeof v === 'number') return v * 1000
+    const t = (v as { creation_time?: string } | null)?.creation_time
+    return t ? Date.parse(t) : NaN
+  }).filter(Number.isFinite)
+  const period = Number(data.auto_rotate_period)
+  return {
+    ...base,
+    state: 'live',
+    latestVersion: Number.isInteger(data.latest_version) ? data.latest_version as number : null,
+    autoRotateSeconds: Number.isFinite(period) && period > 0 ? period : null,
+    lastRotated: created.length ? new Date(Math.max(...created)).toISOString() : null,
+    versions: Object.keys(keys).length,
+  }
+}
+
+/** The ownership question, in the product's own words. */
+export const OWNERSHIP_GUIDE = [
+  { owner: 'Vault', use: 'the native engine', example: 'database credentials, PKI certificates and Transit keys, rotated by Vault itself' },
+  { owner: 'An external provider', use: 'the provider', example: 'a SaaS or cloud key; rotating only the KV copy would break authentication' },
+  { owner: 'The application', use: 'this add-on', example: 'a shared HMAC secret between your own services, verified by your own verifier' },
+] as const

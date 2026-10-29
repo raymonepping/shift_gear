@@ -19,6 +19,7 @@ def evaluate(secret: Secret, config: Config, md: Metadata | None, now: datetime,
         "secret": secret.id,
         "path": f"{config.mount}/{secret.rel_path}",
         "type": secret.type.name,
+        "owner": secret.owner,
         "strategies": list(secret.strategies),
         "compliant": False,
         "reasons": [],      # policy violations
@@ -64,6 +65,8 @@ def evaluate(secret: Secret, config: Config, md: Metadata | None, now: datetime,
         reasons.append(f"history retention {md.max_versions} != policy {config.max_versions}")
     if not md.cas_required:
         reasons.append("cas_required is off")
+    if md.custom.get(h.OWNER) != secret.owner:
+        reasons.append(f"owner in Vault ({md.custom.get(h.OWNER) or 'none'}) != declared owner {secret.owner}")
     if md.custom.get(h.MANAGED_BY) != h.MANAGED_BY_VALUE:
         reasons.append("not marked as managed by the rotation controller")
     if current not in records:

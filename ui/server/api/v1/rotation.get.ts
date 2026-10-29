@@ -7,12 +7,15 @@
 import { requireSession } from '../../utils/session'
 import { vaultCall } from '../../utils/vault'
 import { controllerGet, rotationFeature } from '../../utils/rotation'
-import { canRequest, canViewHistory, timeline } from '../../../shared/kv-rotation'
+import { canRequest, canViewHistory, nativeKey, timeline } from '../../../shared/kv-rotation'
 import type { RotationResponse, RotationSecretView } from '../../../shared/kv-rotation'
+
+// Keys Vault rotates natively, shown beside the KV secrets (prompt 01_10).
+const NATIVE_TRANSIT_KEYS = ['session-signing']
 
 interface ControllerStatus {
   controller: Record<string, unknown>
-  config: { mount: string; prefix: string; types: Record<string, unknown>; secrets: Array<{ id: string; type: string; strategies: string[]; interval_seconds: number; max_reads: number | null; events: Array<{ match: string; path: string }> }> }
+  config: { mount: string; prefix: string; types: Record<string, unknown>; secrets: Array<{ id: string; type: string; owner?: string; strategies: string[]; interval_seconds: number; max_reads: number | null; events: Array<{ match: string; path: string }> }> }
   secrets: Array<Record<string, unknown> & { secret: string }>
 }
 interface ComplianceReport { summary: Record<string, unknown>; secrets: Array<Record<string, unknown> & { secret: string }> }
@@ -82,6 +85,7 @@ export default defineEventHandler(async (event): Promise<RotationResponse> => {
     let history: RotationSecretView['history'] = 'denied'
     let versions: RotationSecretView['versions'] = []
     let currentVersion: number | null = null
+    let owner: string | null = cfg?.owner ?? null
     let maxVersions: number | null = null
     if (can.view) {
       const meta = await vaultCall('GET', path, { token: session.vaultToken })
@@ -89,6 +93,7 @@ export default defineEventHandler(async (event): Promise<RotationResponse> => {
         const data = (meta.json as { data?: Record<string, unknown> }).data ?? {}
         versions = timeline(data as Parameters<typeof timeline>[0])
         currentVersion = Number(data.current_version ?? 0) || null
+        owner = owner ?? ((data.custom_metadata as Record<string, string> | undefined)?.rotation_owner ?? null)
         maxVersions = Number(data.max_versions ?? 0) || null
         history = 'live'
       } else {
@@ -99,6 +104,7 @@ export default defineEventHandler(async (event): Promise<RotationResponse> => {
       id,
       path: `${mount}/${prefix}/${id}`,
       type: cfg?.type ?? id.split('/')[0]!,
+      owner,
       strategies: cfg?.strategies ?? [],
       intervalSeconds: cfg?.interval_seconds ?? null,
       maxReads: cfg?.max_reads ?? null,
@@ -113,6 +119,11 @@ export default defineEventHandler(async (event): Promise<RotationResponse> => {
     }
   }))
 
+  const native = await Promise.all(NATIVE_TRANSIT_KEYS.map(async (name) => {
+    const reply = await vaultCall('GET', `transit/keys/${name}`, { token: session.vaultToken })
+    return nativeKey(name, reply.status, reply.json)
+  }))
+
   return {
     state: feature.feature === 'installed' && status ? 'live' : feature.feature === 'not-installed' ? 'not-installed' : 'unavailable',
     feature: feature.feature,
@@ -125,5 +136,6 @@ export default defineEventHandler(async (event): Promise<RotationResponse> => {
     types: status?.config.types ?? null,
     summary: compliance?.summary ?? null,
     secrets,
+    native,
   }
 })

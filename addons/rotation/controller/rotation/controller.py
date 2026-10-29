@@ -62,6 +62,7 @@ class Controller:
         self.last_error: str | None = None
         self.identity: str | None = None
         self.counters = {"rotations": 0, "cas_skips": 0, "enforced": 0, "errors": 0, "loops": 0}
+        self.retire_scan_due = 0
         self.usage_state = {"available": usage is not None, "undercount": False, "reason": ""}
 
     # -- identity ---------------------------------------------------------
@@ -85,6 +86,14 @@ class Controller:
             self.last_error = f"vault not ready: {exc}"
             log(self.logger, "waiting for vault", level=logging.WARNING, reason=str(exc))
             return
+
+        # On the first loop that reaches Vault, then every 30 loops.
+        if self.counters["loops"] >= self.retire_scan_due:
+            self.retire_scan_due = self.counters["loops"] + 30
+            try:
+                self.retire_unconfigured()
+            except VaultError as exc:
+                log(self.logger, "retire scan failed", level=logging.WARNING, error=str(exc))
 
         reads: dict[str, list[datetime]] = {}
         if self.usage is not None:
@@ -156,6 +165,7 @@ class Controller:
         custom = {
             h.MANAGED_BY: h.MANAGED_BY_VALUE,
             h.TYPE: secret.type.name,
+            h.OWNER: secret.owner,
             h.STRATEGIES: ",".join(secret.strategies),
             h.READS_SINCE: "0",
         }
@@ -175,6 +185,23 @@ class Controller:
                                                     h.LAST_ROTATED: record.at, h.LAST_TRIGGER: "created"})
         log(self.logger, "onboarded", secret=secret.id, version=version, fp=record.fingerprint)
 
+    def retire_unconfigured(self) -> None:
+        """A secret that left rotation.yaml stays in Vault with its history, but is
+        visibly no longer managed: the marker goes, a retirement time is stamped."""
+        configured = {s.rel_path for s in self.config.secrets}
+        for type_dir in self.vault.list_metadata(self.config.prefix):
+            if not type_dir.endswith("/"):
+                continue
+            for name in self.vault.list_metadata(f"{self.config.prefix}/{type_dir.rstrip('/')}"):
+                rel = f"{self.config.prefix}/{type_dir}{name}"
+                if name.endswith("/") or rel in configured:
+                    continue
+                md = self.vault.read_metadata(rel)
+                if md and md.custom.get(h.MANAGED_BY) == h.MANAGED_BY_VALUE:
+                    self.vault.patch_metadata(rel, {h.MANAGED_BY: None, h.RETIRED_AT: iso(utcnow())})
+                    log(self.logger, "retired", secret=rel.removeprefix(self.config.prefix + "/"),
+                        note="no longer in rotation.yaml; value and history kept")
+
     def reconcile(self, secret: Secret, md: Metadata) -> None:
         """Enforcement layer 1: settings and markers follow the configuration."""
         fixes: dict = {}
@@ -183,8 +210,10 @@ class Controller:
             fixes["max_versions"] = self.config.max_versions
         if not md.cas_required:
             fixes["cas_required"] = True
-        wanted = {h.MANAGED_BY: h.MANAGED_BY_VALUE, h.TYPE: secret.type.name,
+        wanted = {h.MANAGED_BY: h.MANAGED_BY_VALUE, h.TYPE: secret.type.name, h.OWNER: secret.owner,
                   h.STRATEGIES: ",".join(secret.strategies)}
+        if h.RETIRED_AT in md.custom:
+            custom[h.RETIRED_AT] = None             # managed again
         for k, v in wanted.items():
             if md.custom.get(k) != v:
                 custom[k] = v
@@ -288,6 +317,7 @@ class Controller:
                 "secret": secret.id,
                 "path": f"{self.config.mount}/{secret.rel_path}",
                 "type": secret.type.name,
+                "owner": secret.owner,
                 "strategies": list(secret.strategies),
                 "version": md.current_version,
                 "fingerprint": current.fingerprint if current else None,

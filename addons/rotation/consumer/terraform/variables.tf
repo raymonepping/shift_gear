@@ -28,10 +28,20 @@ variable "poll_seconds" {
   default     = 1
 }
 
-variable "validate_seconds" {
-  description = "How often the fictional Secure Door checks the cached credential."
+variable "request_seconds" {
+  description = "How often the client asks the verifier to open the door."
   type        = number
-  default     = 10
+  default     = 1
+}
+
+variable "grace_seconds" {
+  description = "Verifier cut-over: 0 = strict (the previous version is retired the moment a new one is adopted); > 0 = the previous version stays accepted this long."
+  type        = number
+  default     = 30
+  validation {
+    condition     = var.grace_seconds >= 0 && var.grace_seconds <= 3600
+    error_message = "grace_seconds must be between 0 and 3600."
+  }
 }
 
 variable "stale_after_seconds" {

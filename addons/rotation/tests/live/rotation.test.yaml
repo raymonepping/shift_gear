@@ -26,10 +26,6 @@ rotation:
       schedule: { interval: 60s }
       policy: { max_age: 5m, min_length: 32, max_reads: 5 }
 
-    signing-key:
-      generator: { kind: bytes, bytes: 48, encoding: base64url }
-      schedule: { interval: 5m }
-      policy: { max_age: 15m, min_length: 64 }
 
     service-password:
       generator: { kind: password, length: 24, classes: [lower, upper, digit, symbol] }
@@ -40,31 +36,36 @@ rotation:
     # Time + usage + human request: the general-purpose demo secret.
     - name: demo
       type: api-key
+      owner: application
       strategies: [time, usage, event]
       usage: { max_reads: 3 }
 
-    # Time + cascade: rotates whenever the core app-config secret is written
-    # (make wl-a-rotate, or the console's operator rotate action).
-    - name: session-signing
-      type: signing-key
-      strategies: [time, event]
-      events:
-        - { match: "kv-v2/data-*", path: shift-gear/config/app-config }
 
     # Time only, slow cadence.
     - name: batch-runner
       type: service-password
+      owner: application
       strategies: [time]
+
+    - name: secure-door
+      type: api-key
+      owner: application
+      strategies: [time, event]
+      events:
+        - { match: "kv-v2/data-*", path: shift-gear/config/app-config }
 
     # ── rotation-test secrets ────────────────────────────────────────────────
     - name: rt-time
       type: test-key
+      owner: application
       strategies: [time, event]
     - name: rt-usage
       type: test-slow
+      owner: application
       strategies: [time, usage, event]
     - name: rt-event
       type: test-slow
+      owner: application
       strategies: [time, event]
       events:
         - { match: "kv-v2/data-*", path: shift-gear/config/app-config }

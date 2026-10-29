@@ -13,13 +13,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 STRATEGIES = ("time", "usage", "event")
+# Who owns the credential decides whether KV rotation means anything (prompt 01_10).
+OWNERS = {
+    "application": None,   # the only owner this add-on accepts
+    "vault-native": "use the matching Vault engine instead (database, PKI or Transit rotate natively)",
+    "external-provider": ("rotating only the KV copy breaks authentication; the provider must issue the "
+                          "new credential, which this add-on does not do"),
+}
 GENERATOR_KINDS = ("chars", "bytes", "password")
 CHARSETS = ("alnum", "alpha", "hex", "lower")
 ENCODINGS = ("base64url", "hex")
 PASSWORD_CLASSES = ("lower", "upper", "digit", "symbol")
 # custom_metadata allows 64 keys of <= 512 bytes; leave room for the summary keys.
 MAX_VERSIONS_LIMIT = 50
-SUMMARY_KEYS = 10            # history.py: managed_by … watch (asserted in the tests)
+SUMMARY_KEYS = 12            # history.py: managed_by … retired_at (asserted in the tests)
 MAX_EVENT_RULES = 8
 MAX_WATCH_BYTES = 480        # encoded rotation_watch must stay under Vault's 512-byte value limit
 
@@ -87,6 +94,7 @@ class Secret:
     max_reads: int | None
     events: tuple[EventRule, ...]
     rel_path: str           # <prefix>/<type>/<name>
+    owner: str = "application"
 
     @property
     def id(self) -> str:
@@ -183,6 +191,14 @@ def _secret(raw: dict, types: dict[str, SecretType], prefix: str, index: int) ->
     if type_name not in types:
         raise ConfigError(f"{where}.type: unknown type '{type_name}'")
     stype = types[type_name]
+    owner = raw.get("owner")
+    if owner is None:
+        raise ConfigError(f"{where}.owner: missing — declare who owns the credential: "
+                          f"application, vault-native or external-provider (only application is managed here)")
+    if owner not in OWNERS:
+        raise ConfigError(f"{where}.owner: '{owner}' is not one of {sorted(OWNERS)}")
+    if OWNERS[owner] is not None:
+        raise ConfigError(f"{where}.owner: {owner} — {OWNERS[owner]}")
     strategies = tuple(raw.get("strategies", ["time"]))
     bad = [s for s in strategies if s not in STRATEGIES]
     if bad or not strategies:
@@ -231,7 +247,7 @@ def _secret(raw: dict, types: dict[str, SecretType], prefix: str, index: int) ->
         raise ConfigError(f"{where}: events are declared but strategy 'event' is not enabled")
 
     return Secret(name=str(name), type=stype, strategies=strategies, interval=interval,
-                  max_reads=max_reads, events=tuple(events), rel_path=rel_path)
+                  max_reads=max_reads, events=tuple(events), rel_path=rel_path, owner=str(owner))
 
 
 def parse(document: dict) -> Config:
@@ -293,6 +309,7 @@ def describe(config: Config) -> dict:
                 "id": s.id,
                 "path": f"{config.mount}/{s.rel_path}",
                 "type": s.type.name,
+                "owner": s.owner,
                 "strategies": list(s.strategies),
                 "interval_seconds": s.interval,
                 "max_reads": s.max_reads,

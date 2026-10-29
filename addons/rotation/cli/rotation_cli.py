@@ -75,16 +75,16 @@ def cmd_status(args) -> int:
         result = compliance.evaluate(secret, cfg, md, now())
         bad += not result["compliant"]
         if md is None:
-            rows.append([secret.id, secret.type.name, "-", "-", "-", "-", "-", "NOT ONBOARDED"])
+            rows.append([secret.id, secret.owner, "-", "-", "-", "-", "-", "NOT ONBOARDED"])
             continue
         state = triggers.State(md.created(md.current_version), None)
         due = triggers.next_due(secret, state).get("time")
         due_text = "-" if due is None else (
             "due now" if due <= time.time() else f"in {int(due - time.time())}s")
-        rows.append([secret.id, secret.type.name, f"v{md.current_version}", result.get("fingerprint") or "?",
+        rows.append([secret.id, secret.owner, f"v{md.current_version}", result.get("fingerprint") or "?",
                      ago(md.created(md.current_version)), md.custom.get(h.LAST_TRIGGER, "-"), due_text,
                      "COMPLIANT" if result["compliant"] else "NON-COMPLIANT"])
-    print(table(rows, ["SECRET", "TYPE", "VERSION", "FINGERPRINT", "LAST ROTATED", "TRIGGER", "NEXT (TIME)", "STATUS"]))
+    print(table(rows, ["SECRET", "OWNER", "VERSION", "FINGERPRINT", "LAST ROTATED", "TRIGGER", "NEXT (TIME)", "STATUS"]))
     return 1 if bad else 0
 
 

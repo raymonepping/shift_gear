@@ -414,14 +414,18 @@ class Suite:
                      "-o", "jsonpath={.items[0].metadata.name} {.items[0].status.startTime}").stdout.strip()
             return out
         before = pod()
+        started = time.time()
         sh("make", "rotation-up", timeout=900)
         tf_log = (ROOT / ".build/addons/rotation/tf-apply.log").read_text()
         assert "No changes." in tf_log, "terraform reported changes on a second rotation-up"
+        # Only the playbooks this rotation-up ran (the Secure Door writes its own
+        # rotation-consumer-* stats into the same directory).
         stats = {}
         for f in sorted((ROOT / ".build/addons/rotation/ansible-stats").glob("rotation-*.json")):
-            if f.stem == "rotation-down":
+            if f.stem == "rotation-down" or f.stat().st_mtime < started:
                 continue
             stats[f.stem] = json.loads(f.read_text()).get("changed_total")
+        assert stats, "rotation-up wrote no ansible stats"
         assert all(v == 0 for v in stats.values()), f"ansible changed on redeploy: {stats}"
         after = pod()
         assert before == after, f"controller pod restarted: {before} -> {after}"

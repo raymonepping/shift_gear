@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   canRequest, canViewHistory, compliancePill, decodeRecords, duration, encodeRequest,
-  isManagedSecretId, relative, timeline, triggerLabel,
+  isManagedSecretId, nativeKey, relative, timeline, triggerLabel,
 } from '../shared/kv-rotation.ts'
 
 test('history records decode from custom metadata and ignore everything else', () => {
@@ -62,4 +62,16 @@ test('capabilities decide the actions, missing compliance is not a verdict', () 
   assert.equal(compliancePill(false).tone, 'rejected')
   assert.equal(triggerLabel('usage'), 'After use')
   assert.equal(triggerLabel(''), 'Not recorded')
+})
+
+test('a natively rotated Transit key is read from public metadata only', () => {
+  const k = nativeKey('session-signing', 200, { data: { latest_version: 3, auto_rotate_period: 3600,
+    keys: { 1: { creation_time: '2026-10-29T08:00:00Z' }, 2: { creation_time: '2026-10-29T09:00:00Z' }, 3: { creation_time: '2026-10-29T10:00:00Z' } } } })
+  assert.equal(k.state, 'live')
+  assert.equal(k.latestVersion, 3)
+  assert.equal(k.autoRotateSeconds, 3600)
+  assert.equal(k.lastRotated, '2026-10-29T10:00:00.000Z')
+  assert.equal(nativeKey('x', 403, null).state, 'denied')
+  assert.equal(nativeKey('x', 500, null).state, 'unavailable')
+  assert.equal(nativeKey('x', 200, { data: { latest_version: 1, keys: { 1: 1761724800 } } }).lastRotated, '2025-10-29T08:00:00.000Z')
 })

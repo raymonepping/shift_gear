@@ -1,242 +1,222 @@
-"""Offline tests for the Secure Door consumer (stdlib unittest; no Vault, no cluster)."""
+"""Offline tests for the two-party Secure Door (stdlib unittest; no Vault, no cluster).
+
+The verifier and the client each read their *own* snapshot file, as their own
+Vault Agents would render them; a test controls when each one "sees" a rotation.
+"""
 from __future__ import annotations
 
 import ast
-import re
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-from secure_door import door, health, snapshot  # noqa: E402
-from secure_door.app import Consumer  # noqa: E402
+from secure_door import health, protocol, snapshot  # noqa: E402
+from secure_door.client import Client  # noqa: E402
+from secure_door.verifier import Verifier  # noqa: E402
 
-VALUE = "Q" * 32
-
-
-def iso(dt):
-    return dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+V1, V2, V3 = "A" * 32, "B" * 32, "C" * 32
 
 
-class Files:
+class Clock:
     def __init__(self):
-        self.tmp = tempfile.TemporaryDirectory()  # cleaned up when the Files object is collected
+        self.t = 1_800_000_000.0
+
+    def __call__(self):
+        return self.t
+
+
+def render(path, value, version):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({"data": {"value": value}, "metadata": {"version": version,
+                   "created_time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")}}, f)
+    os.replace(tmp, path)
+
+
+class World:
+    """Two parties, two snapshot files (two Agents), one shared probe result."""
+
+    def __init__(self, grace: float):
+        self.tmp = tempfile.TemporaryDirectory()
         d = self.tmp.name
-        self.snap = os.path.join(d, "secret.json")
-        self.probe = os.path.join(d, "vault.json")
-        self.agent_log = os.path.join(d, "agent.log")
-        self.status = os.path.join(d, "state.json")
-        self.state = os.path.join(d, "last-version.json")
-
-    def render(self, value, version, created=None):
-        doc = {"data": {"value": value},
-               "metadata": {"version": version, "created_time": created or iso(datetime.now(timezone.utc))}}
-        tmp = self.snap + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(doc, f)
-        os.replace(tmp, self.snap)
-
-    def probe_result(self, reachable=True, sealed=False, at=None):
-        with open(self.probe, "w") as f:
-            json.dump({"reachable": reachable, "sealed": sealed, "rc": 0 if reachable else 1,
-                       "at": iso(at or datetime.now(timezone.utc))}, f)
-
-    def env(self):
-        return {"CONSUMER_SNAPSHOT_FILE": self.snap, "CONSUMER_PROBE_FILE": self.probe,
-                "CONSUMER_AGENT_LOG": self.agent_log, "CONSUMER_STATUS_FILE": self.status,
-                "CONSUMER_STATE_FILE": self.state, "CONSUMER_VALIDATE_S": "3600", "CONSUMER_STALE_AFTER_S": "60"}
-
-
-class SnapshotTests(unittest.TestCase):
-    def setUp(self):
-        self.f = Files()
-
-    def test_missing_partial_malformed(self):
-        with self.assertRaises(snapshot.SnapshotMissing):
-            snapshot.read(self.f.snap)
-        for bad in ["", '{"data": {"value": "x"', "[]", '{"data": {}, "metadata": {"version": 1}}',
-                    '{"data": {"value": "x"}, "metadata": {"version": 0}}',
-                    '{"data": {"value": "x"}, "metadata": {"version": true}}']:
-            with open(self.f.snap, "w") as fh:
-                fh.write(bad)
-            with self.assertRaises(snapshot.SnapshotInvalid, msg=bad):
-                snapshot.read(self.f.snap)
-
-    def test_value_never_in_repr_or_str(self):
-        self.f.render(VALUE, 3)
-        snap = snapshot.read(self.f.snap)
-        self.assertEqual(snap.version, 3)
-        self.assertNotIn(VALUE, repr(snap))
-        self.assertNotIn(VALUE, str(snap))
-        self.assertEqual(len(snap.fingerprint), 12)
-
-
-class DoorTests(unittest.TestCase):
-    def setUp(self):
-        self.f = Files()
-        self.door = door.SecureDoor(self.f.snap)
-
-    def test_granted_denied_unavailable(self):
-        self.assertEqual(self.door.check(VALUE).verdict, "UNAVAILABLE")
-        self.f.render(VALUE, 5)
-        v = self.door.check(VALUE)
-        self.assertEqual((v.verdict, v.checked_version), ("GRANTED", 5))
-        self.assertIn("no issuer exists", v.meaning)
-        self.assertEqual(self.door.check("R" * 32).verdict, "DENIED")
-
-    def test_fingerprint_is_never_a_credential(self):
-        self.f.render(VALUE, 5)
-        fp = snapshot.read(self.f.snap).fingerprint
-        self.assertEqual(self.door.check(fp).verdict, "DENIED")
-
-    def test_door_reads_the_snapshot_independently(self):
-        self.f.render(VALUE, 5)
-        self.f.render("S" * 32, 6)          # rotated after the caller cached VALUE
-        v = self.door.check(VALUE)
-        self.assertEqual((v.verdict, v.checked_version), ("DENIED", 6))
-
-
-class HealthTests(unittest.TestCase):
-    def setUp(self):
-        self.f = Files()
-
-    def test_probe_states(self):
-        prev = health.VaultProbe()
-        self.assertEqual(health.read_probe(self.f.probe, prev, 15).state, "unknown")
-        self.f.probe_result(True)
-        p = health.read_probe(self.f.probe, prev, 15)
-        self.assertEqual(p.state, "reachable")
-        self.f.probe_result(False)
-        p2 = health.read_probe(self.f.probe, p, 15)
-        self.assertEqual(p2.state, "unreachable")
-        self.f.probe_result(True, sealed=True)
-        self.assertEqual(health.read_probe(self.f.probe, p2, 15).state, "sealed")
-        self.f.probe_result(True, at=datetime.now(timezone.utc) - timedelta(minutes=5))
-        self.assertEqual(health.read_probe(self.f.probe, p2, 15).state, "unknown")
-
-    def test_agent_log_evidence(self):
-        ev = health.AgentEvidence()
-        with open(self.f.agent_log, "w") as fh:
-            fh.write("2026-10-28T12:00:00.000Z [TRACE] (view) vault.read(kv/data/x): marking successful data response\n")
-            fh.write("2026-10-28T12:00:05.000Z [ERROR] (view) vault.read(kv/data/x): permission denied\n")
-            fh.write("partial line without newline")
-        ev = health.scan_agent_log(self.f.agent_log, ev)
-        self.assertTrue(ev.observable)
-        self.assertEqual(ev.last_refresh.second, 0)
-        self.assertIsNotNone(ev.last_error_at)
-        self.assertNotIn("permission", ev.last_error)
-
-
-class ConsumerTests(unittest.TestCase):
-    def setUp(self):
-        self.f = Files()
+        self.vsnap, self.csnap = os.path.join(d, "v.json"), os.path.join(d, "c.json")
+        probe = os.path.join(d, "probe.json")
+        with open(probe, "w") as f:
+            json.dump({"reachable": True, "sealed": False, "rc": 0,
+                       "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}, f)
+        common = {"DOOR_PROBE_FILE": probe, "DOOR_AGENT_LOG": os.path.join(d, "none.log")}
+        self.clock = Clock()
         self.out = io.StringIO()
-        self.f.probe_result(True)
+        self.verifier = Verifier({**common, "DOOR_SNAPSHOT_FILE": self.vsnap, "DOOR_GRACE_SECONDS": str(grace)},
+                                 out=self.out, clock=self.clock)
+        self.client = Client({**common, "DOOR_SNAPSHOT_FILE": self.csnap, "DOOR_STATE_FILE": os.path.join(d, "last.json")},
+                             out=self.out, send=self._send)
+        self.client.next_request = float("inf")      # knock explicitly
 
-    def consumer(self):
-        return Consumer(self.f.env(), out=self.out)
+    def _send(self, body):
+        body = dict(body, ts=int(self.clock()))       # the verifier's clock is authoritative in tests
+        body["sig"] = protocol.sign(self._secret_for(body["key_version"]), body["client"], body["ts"], body["nonce"])
+        return self.verifier.check(body)
 
-    def test_hot_reload_without_restart_and_door_sequence(self):
-        c = self.consumer()
-        self.f.render(VALUE, 54)
-        c.poll_once()
-        self.assertEqual(c.cached.version, 54)
-        self.f.render("T" * 32, 55)
-        c.poll_once()
-        self.f.render("U" * 32, 56)
-        c.poll_once()
-        self.assertEqual(c.cached.version, 56)
-        log = self.out.getvalue()
-        self.assertIn("ROTATION DETECTED v54 -> v55", log)
-        self.assertIn("STALE CREDENTIAL REJECTED version=v54", log)
-        self.assertIn("ACCESS GRANTED version=v55", log)
-        self.assertIn("ROTATION DETECTED v55 -> v56", log)
-        rot = c.rotations[0]
-        self.assertTrue(rot["stale_denied"] and rot["fresh_granted"])
-        for v in (VALUE, "T" * 32, "U" * 32):
-            self.assertNotIn(v, log)
+    def _secret_for(self, version):
+        for s in (self.client.cached, self.client.previous):
+            if s and s.version == version:
+                return s.value
+        raise AssertionError("client signed with a version it does not hold")
 
-    def test_gap_while_running_and_after_restart(self):
-        c = self.consumer()
-        self.f.render(VALUE, 54)
-        c.poll_once()
-        self.f.render("V" * 32, 58)
-        c.poll_once()
-        self.assertIn("ROTATION DETECTED v54 -> v58; missed 3 intermediate version(s)", self.out.getvalue())
-        # a restart (new process) after more rotations
-        self.f.render("W" * 32, 61)
-        c2 = self.consumer()
-        c2.poll_once()
-        self.assertIn("v58 -> v61 while stopped; missed 2", self.out.getvalue())
-        self.assertEqual(c2.rotations[0]["missed"], 2)
+    def both_see(self, value, version):
+        render(self.vsnap, value, version)
+        render(self.csnap, value, version)
+        self.verifier.poll_once()
+        self.client.poll_once()
 
-    def test_race_retries_instead_of_false_failure(self):
-        c = self.consumer()
-        self.f.render(VALUE, 10)
-        c.poll_once()
-        real_check = c.door.check
-        calls = {"n": 0}
+    def knock(self):
+        return self.client.knock()
 
-        def racing(presented):
-            calls["n"] += 1
-            if calls["n"] == 2:               # the fresh check: another rotation lands first
-                self.f.render("Y" * 32, 12)
-            return real_check(presented)
-        c.door.check = racing
-        self.f.render("X" * 32, 11)
-        c.poll_once()
-        self.assertEqual(c.cached.version, 12)
-        self.assertTrue(c.rotations[0]["fresh_granted"])
 
-    def test_states_from_evidence_not_file_age(self):
-        c = self.consumer()
-        self.assertEqual(c.credential_state()[0], "no-data")
-        self.f.render(VALUE, 1)
-        c.poll_once()
-        self.assertEqual(c.credential_state()[0], "current")
-        # an unchanged, old file is never a staleness reason
-        os.utime(self.f.snap, (0, 0))
-        c.poll_once()
-        self.assertEqual(c.credential_state()[0], "current")
-        self.f.probe_result(False)
-        c.poll_once()
-        self.assertEqual(c.credential_state()[0], "last-known-good")
-        c.probe.since = datetime.now(timezone.utc) - timedelta(seconds=120)
-        self.assertEqual(c.credential_state()[0], "stale")
-        os.remove(self.f.probe)
-        c.probe = health.VaultProbe()
-        c.poll_once()
-        state, reason = c.credential_state()
-        self.assertEqual((state, reason), ("last-known-good", "Vault connectivity unknown"))
+class ProtocolTests(unittest.TestCase):
+    def test_sign_and_shape(self):
+        req = protocol.new_request(V1, 1, "door-client", now=100)
+        self.assertIsNone(protocol.check_shape(req))
+        self.assertEqual(req["sig"], protocol.sign(V1, "door-client", 100, req["nonce"]))
+        self.assertNotEqual(req["sig"], protocol.sign(V2, "door-client", 100, req["nonce"]))
+        self.assertEqual(len(req["nonce"]), 32)
+        for bad in (None, [], {**req, "nonce": "short"}, {**req, "sig": "3f2a9c1b0d4e"}, {**req, "key_version": True}):
+            self.assertEqual(protocol.check_shape(bad), "malformed")
 
-    def test_malformed_snapshot_keeps_last_known_good(self):
-        c = self.consumer()
-        self.f.render(VALUE, 7)
-        c.poll_once()
-        with open(self.f.snap, "w") as fh:
-            fh.write('{"data": ')
-        c.poll_once()
-        self.assertEqual(c.cached.version, 7)
-        self.assertIn("rendered snapshot rejected", self.out.getvalue())
+    def test_nonce_cache(self):
+        cache = protocol.NonceCache(window_s=30)
+        self.assertFalse(cache.seen_before("n1", 1000))
+        self.assertTrue(cache.seen_before("n1", 1010))
+        self.assertFalse(cache.seen_before("n1", 1000 + 61))   # outside 2x window: forgotten
 
-    def test_status_contract_has_no_secret_field(self):
-        c = self.consumer()
-        self.f.render(VALUE, 3)
-        c.poll_once()
-        c.write_status()
-        with open(self.f.status) as fh:
-            raw = fh.read()
-        self.assertNotIn(VALUE, raw)
-        doc = json.loads(raw)
-        self.assertEqual(doc["schema"], 1)
-        self.assertFalse(doc["agent"]["last_refresh"]["observable"])
+
+class VerifierTests(unittest.TestCase):
+    def setUp(self):
+        self.clock = Clock()
+        self.v = Verifier({"DOOR_PROBE_FILE": "/nonexistent", "DOOR_AGENT_LOG": "/nonexistent", "DOOR_GRACE_SECONDS": "30"},
+                          out=io.StringIO(), clock=self.clock)
+        self.v.adopt(1, V1, None)
+
+    def req(self, secret, version, **over):
+        r = protocol.new_request(secret, version, "door-client", now=self.clock())
+        r.update(over)
+        if "sig" not in over:
+            r["sig"] = protocol.sign(secret, r["client"], r["ts"], r["nonce"])
+        return r
+
+    def test_granted_and_every_refusal_reason(self):
+        self.assertEqual(self.v.check(self.req(V1, 1))["verdict"], "GRANTED")
+        self.assertEqual(self.v.check(self.req(V2, 1))["reason"], "bad-signature")
+        self.assertEqual(self.v.check(self.req(V1, 1, ts=int(self.clock()) - 60))["reason"], "stale-timestamp")
+        self.assertEqual(self.v.check(self.req(V2, 2))["reason"], "version-unknown")
+        self.assertEqual(self.v.check({"not": "a request"})["reason"], "malformed")
+
+    def test_replayed_nonce_is_refused(self):
+        r = self.req(V1, 1)
+        self.assertEqual(self.v.check(r)["verdict"], "GRANTED")
+        again = self.v.check(dict(r))
+        self.assertEqual((again["verdict"], again["reason"]), ("DENIED", "replayed-nonce"))
+        self.assertEqual(self.v.status()["verifier"]["recent"][0]["client"], "door-client")
+
+    def test_grace_then_retired(self):
+        self.v.adopt(2, V2, None)
+        self.assertTrue(self.v.check(self.req(V1, 1))["reason"].startswith("grace"))
+        self.clock.t += 31
+        self.assertEqual(self.v.check(self.req(V1, 1))["reason"], "version-retired")
+        self.assertEqual(self.v.check(self.req(V2, 2))["verdict"], "GRANTED")
+
+    def test_strict_retires_immediately(self):
+        self.v.grace_s = 0
+        self.v.adopt(2, V2, None)
+        self.assertEqual(self.v.check(self.req(V1, 1))["reason"], "version-retired")
+
+    def test_status_never_carries_a_value(self):
+        self.v.adopt(2, V2, None)
+        raw = json.dumps(self.v.status())
+        self.assertNotIn(V1, raw)
+        self.assertNotIn(V2, raw)
+
+
+class TwoPartyTests(unittest.TestCase):
+    def test_grace_rotation_has_zero_denials_whoever_sees_it_first(self):
+        for first in ("verifier", "client"):
+            w = World(grace=30)
+            w.both_see(V1, 1)
+            self.assertEqual(w.knock()["verdict"], "GRANTED")
+            target = w.vsnap if first == "verifier" else w.csnap
+            render(target, V2, 2)
+            (w.verifier if first == "verifier" else w.client).poll_once()
+            self.assertEqual(w.knock()["verdict"], "GRANTED", f"{first} first")
+            render(w.vsnap, V2, 2)
+            render(w.csnap, V2, 2)
+            w.verifier.poll_once()
+            w.client.poll_once()
+            self.assertEqual(w.knock()["verdict"], "GRANTED")
+            self.assertEqual(w.client.outcomes.get("DENIED", 0), 0, f"{first} first")
+        self.assertGreaterEqual(w.client.outcomes["fallback"], 1)       # client-first used the previous key
+
+    def test_strict_rotation_has_a_measured_denial_window(self):
+        w = World(grace=0)
+        w.both_see(V1, 1)
+        w.knock()
+        render(w.vsnap, V2, 2)
+        w.verifier.poll_once()                       # verifier adopts first, retires v1 at once
+        for _ in range(3):
+            self.assertEqual(w.knock()["reason"], "version-retired")
+        render(w.csnap, V2, 2)
+        w.client.poll_once()                         # client's Agent delivers v2
+        self.assertEqual(w.knock()["verdict"], "GRANTED")
+        window = w.client.windows[0]
+        self.assertEqual((window["denied"], window["reason"], window["reasons"]), (3, "version-retired", {"version-retired": 3}))
+        self.assertIsNotNone(window["seconds"])
+
+    def test_client_later_than_grace_fails_predictably_then_recovers(self):
+        w = World(grace=30)
+        w.both_see(V1, 1)
+        render(w.vsnap, V2, 2)
+        w.verifier.poll_once()
+        self.assertEqual(w.knock()["verdict"], "GRANTED")        # inside grace
+        w.clock.t += 31                                          # client's Agent cut off past the grace
+        self.assertEqual(w.knock()["reason"], "version-retired")
+        render(w.csnap, V2, 2)
+        w.client.poll_once()
+        self.assertEqual(w.knock()["verdict"], "GRANTED")
+        self.assertEqual(w.client.windows[0]["reason"], "version-retired")
+
+    def test_hot_reload_keeps_the_process_and_reports_gaps(self):
+        w = World(grace=30)
+        w.both_see(V1, 1)
+        pid = w.client.status()["pid"]
+        w.both_see(V3, 4)
+        self.assertEqual(w.client.cached.version, 4)
+        self.assertIn("ROTATION DETECTED v1 -> v4; missed 2", w.out.getvalue())
+        self.assertEqual(w.client.status()["pid"], pid)
+        render(w.csnap, V2, 7)                                                # rotations while it was stopped
+        restarted = Client(dict(w.client.env), out=w.out, send=w._send)      # new process, same state file
+        restarted.next_request = float("inf")
+        restarted.poll_once()
+        gap = restarted.rotations[0]
+        self.assertEqual((gap["from"], gap["to"], gap["missed"], gap["while_stopped"]), (4, 7, 2, True))
+        for value in (V1, V2, V3):
+            self.assertNotIn(value, w.out.getvalue())
+
+    def test_client_status_contract_has_no_secret_field(self):
+        w = World(grace=30)
+        w.both_see(V1, 1)
+        w.knock()
+        doc = w.client.status()
+        raw = json.dumps(doc)
+        self.assertNotIn(V1, raw)
 
         def keys(o):
             if isinstance(o, dict):
@@ -246,17 +226,46 @@ class ConsumerTests(unittest.TestCase):
             elif isinstance(o, list):
                 for x in o:
                     yield from keys(x)
-        forbidden = {"value", "secret_value", "credential", "token", "password", "api_key"}
-        self.assertFalse(forbidden & set(keys(doc)), set(keys(doc)) & forbidden)
+        self.assertFalse({"value", "secret_value", "credential", "token", "password", "api_key"} & set(keys(doc)))
 
 
-class StdlibOnlyTests(unittest.TestCase):
-    def test_no_third_party_and_no_vault_client(self):
+class SnapshotAndHealthTests(unittest.TestCase):
+    def test_iso_keeps_milliseconds(self):
+        moment = datetime(2026, 10, 29, 8, 1, 2, 345678, tzinfo=timezone.utc)
+        self.assertEqual(health.iso(moment), "2026-10-29T08:01:02.345Z")
+        self.assertEqual(health.parse_time(health.iso(moment)), moment.replace(microsecond=345000))
+
+    def test_snapshot_rejects_partial_and_hides_value(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "s.json")
+            with self.assertRaises(snapshot.SnapshotMissing):
+                snapshot.read(p)
+            with open(p, "w") as f:
+                f.write('{"data": {"value": "x"')
+            with self.assertRaises(snapshot.SnapshotInvalid):
+                snapshot.read(p)
+            render(p, V1, 3)
+            s = snapshot.read(p)
+            self.assertNotIn(V1, repr(s) + str(s))
+
+    def test_agent_log_evidence(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "agent.log")
+            with open(p, "w") as f:
+                f.write("2026-10-28T12:00:00.000Z [TRACE] (view) vault.read(kv/data/x): marking successful data response\n")
+                f.write("2026-10-28T12:00:05.000Z [ERROR] (view) vault.read(kv/data/x): permission denied\n")
+            ev = health.scan_agent_log(p, health.AgentEvidence())
+            self.assertTrue(ev.observable)
+            self.assertNotIn("permission", ev.last_error)
+
+
+class StaticTests(unittest.TestCase):
+    def test_stdlib_only_and_no_vault_access(self):
         pkg = HERE.parent / "secure_door"
         for py in pkg.glob("*.py"):
             text = py.read_text()
-            self.assertNotIn("urllib.request", text, f"{py.name}: the consumer must not make HTTP calls")
             self.assertIsNone(re.search(r"[\"']VAULT_", text), f"{py.name}: no VAULT_* settings")
+            self.assertNotIn(":8200", text, f"{py.name}: the parties never talk to Vault")
             for node in ast.walk(ast.parse(text)):
                 names = [a.name for a in node.names] if isinstance(node, ast.Import) else \
                     [node.module] if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module else []

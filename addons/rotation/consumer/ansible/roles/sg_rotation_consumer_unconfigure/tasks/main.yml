@@ -1,7 +1,7 @@
 ---
-# Remove only the consumer's auth role. The watched secret, its versions and
-# its history stay; the rotation controller keeps rotating it.
-- name: Remove the Secure Door's Kubernetes auth role
+# Remove only the parties' auth roles (and any retired one). The watched
+# secret, its versions and its history stay; the controller keeps rotating it.
+- name: Remove the Secure Door's Kubernetes auth roles
   module_defaults:
     ansible.builtin.uri:
       ca_path: "{{ sg_rotation_consumer_vault_ca }}"
@@ -10,17 +10,18 @@
         X-Vault-Namespace: "{{ sg_rotation_consumer_vault_namespace }}"
   no_log: true
   block:
-    - name: Read the role
+    - name: Read the roles
       ansible.builtin.uri:
-        url: "{{ sg_rotation_consumer_vault_addr }}/v1/auth/kubernetes/role/sg-rotation-consumer"
+        url: "{{ sg_rotation_consumer_vault_addr }}/v1/auth/kubernetes/role/{{ item }}"
         status_code: [200, 404]
+      loop: "{{ (sg_rotation_consumer_k8s_roles | list) + sg_rotation_consumer_retired_roles }}"
       check_mode: false
-      register: sg_rotation_consumer_unconfigure_role
+      register: sg_rotation_consumer_unconfigure_roles
 
-    - name: Delete the role
+    - name: Delete the roles that exist
       ansible.builtin.uri:
-        url: "{{ sg_rotation_consumer_vault_addr }}/v1/auth/kubernetes/role/sg-rotation-consumer"
+        url: "{{ sg_rotation_consumer_vault_addr }}/v1/auth/kubernetes/role/{{ item.item }}"
         method: DELETE
         status_code: [200, 204]
       changed_when: true
-      when: sg_rotation_consumer_unconfigure_role.status == 200
+      loop: "{{ sg_rotation_consumer_unconfigure_roles.results | selectattr('status', 'equalto', 200) | list }}"

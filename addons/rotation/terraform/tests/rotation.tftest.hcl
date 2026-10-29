@@ -139,3 +139,13 @@ run "sentinel_egp_is_rendered_from_the_config" {
     error_message = "The EGP must pin the controller's ServiceAccount, carry each type's policy and allow only rotation_request patches."
   }
 }
+
+run "a_non_application_owner_is_refused" {
+  command = plan
+
+  variables {
+    config_file = "tests/fixtures/external-owner.yaml"
+  }
+
+  expect_failures = [terraform_data.config_contract]
+}

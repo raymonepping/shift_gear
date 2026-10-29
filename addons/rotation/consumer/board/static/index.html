@@ -17,40 +17,91 @@
   </header>
   <main id="main" class="board">
     <section class="vg-hero door" aria-labelledby="door-title">
-      <p class="eyebrow">KV v2 rotation consumer · demo</p>
-      <h1 id="door-title"><span id="door-state">Waiting for the consumer…</span></h1>
+      <p class="eyebrow">Application-owned KV rotation · two parties</p>
+      <h1 id="door-title"><span id="door-state">Waiting for the parties…</span></h1>
       <p class="door-meta">
-        <span>Credential <strong id="door-version">—</strong></span>
-        <span>fingerprint <span class="mono" id="door-fp">—</span></span>
+        <span>Client signs with <strong id="door-client-version">—</strong></span>
+        <span>Verifier current <strong id="door-verifier-version">—</strong></span>
+        <span>Cut-over <strong id="door-mode">—</strong></span>
         <span id="door-secret" class="mono"></span>
       </p>
       <p class="door-honesty" id="door-honesty">
-        Fictional door. <strong>GRANTED</strong> means the app's cached credential matches Vault's latest
-        version; <strong>DENIED</strong> means it does not. No external service validates or revokes anything.
-        The Vault versions and the Agent reads are real.
+        <strong>The door is fictional; the trust decision is real:</strong> a separate verifier, with its own
+        identity and its own copy of the secret, accepts the new key and rejects the old one.
+        Each party gets the secret from its own Vault Agent. Neither one calls Vault.
       </p>
       <p class="hero-status" id="door-status" role="status" aria-live="polite"></p>
     </section>
 
-    <section class="panel vg-glass" aria-labelledby="health-title">
+    <div class="lanes">
+      <section class="panel vg-glass lane" aria-labelledby="verifier-title" data-party="verifier">
+        <div class="panel-head">
+          <div>
+            <h2 id="verifier-title">Verifier</h2>
+            <p>Owns the trust decision. ServiceAccount <code>door-verifier</code>, Vault role <code>sg-rotation-door-verifier</code>.</p>
+          </div>
+          <span class="vg-pill" id="verifier-answering">—</span>
+        </div>
+        <h3 class="lane-sub">Key ring</h3>
+        <ul class="ring" id="verifier-ring" aria-label="Versions the verifier accepts"></ul>
+        <dl class="signals">
+          <div class="signal"><dt>Credential loaded</dt><dd id="verifier-credential">unknown</dd></div>
+          <div class="signal"><dt>Last successful Vault refresh</dt><dd id="verifier-refresh">unknown</dd></div>
+          <div class="signal"><dt>Vault connectivity <small>(reachability only)</small></dt><dd id="verifier-vault">unknown</dd></div>
+        </dl>
+      </section>
+
+      <section class="panel vg-glass lane" aria-labelledby="client-title" data-party="client">
+        <div class="panel-head">
+          <div>
+            <h2 id="client-title">Client</h2>
+            <p>Hot-reloads and knocks every second. ServiceAccount <code>door-client</code>, Vault role <code>sg-rotation-door-client</code>.</p>
+          </div>
+          <span class="vg-pill" id="client-answering">—</span>
+        </div>
+        <h3 class="lane-sub">Requests</h3>
+        <p class="outcomes" id="client-outcomes">no request yet</p>
+        <dl class="signals">
+          <div class="signal"><dt>Credential loaded</dt><dd id="client-credential">unknown</dd></div>
+          <div class="signal"><dt>Last successful Vault refresh</dt><dd id="client-refresh">unknown</dd></div>
+          <div class="signal"><dt>Vault connectivity <small>(reachability only)</small></dt><dd id="client-vault">unknown</dd></div>
+        </dl>
+      </section>
+    </div>
+
+    <section class="panel vg-glass" aria-labelledby="windows-title">
       <div class="panel-head">
         <div>
-          <h2 id="health-title">Health</h2>
-          <p>Three separate signals. Without evidence a signal says so — there is no single "healthy" light.</p>
+          <h2 id="windows-title">Denial windows, measured</h2>
+          <p>Consecutive refused requests from the client, from the first refusal to the next grant.</p>
         </div>
-        <span class="source-tag">consumer status · /api/state</span>
+        <span class="source-tag">client status</span>
       </div>
-      <dl class="signals">
-        <div class="signal"><dt>Credential loaded</dt><dd id="sig-credential">unknown</dd></div>
-        <div class="signal"><dt>Last successful Vault refresh</dt><dd id="sig-refresh">unknown</dd></div>
-        <div class="signal"><dt>Vault connectivity <small>(reachability only)</small></dt><dd id="sig-vault">unknown</dd></div>
-      </dl>
+      <div class="vg-table-wrap" tabindex="0" role="region" aria-label="Denial windows table">
+        <table class="vg-table">
+          <thead><tr><th scope="col">Started</th><th scope="col">Reason</th><th scope="col">Signed with</th><th scope="col">Denied</th><th scope="col">Length</th></tr></thead>
+          <tbody id="window-rows"></tbody>
+        </table>
+      </div>
+      <p class="dim" id="windows-empty">No denied request yet. In grace mode a rotation should leave this table empty.</p>
+    </section>
+
+    <section class="panel vg-glass" aria-labelledby="decisions-title">
+      <div class="panel-head">
+        <div>
+          <h2 id="decisions-title">Verifier decisions</h2>
+          <p>Every request since the verifier started, by verdict and reason. Replayed nonces, stale timestamps and retired keys land here.</p>
+        </div>
+        <span class="source-tag">verifier status</span>
+      </div>
+      <p class="verdict-counts" id="verdict-counts">no decision yet</p>
+      <p class="last-refusal" id="last-refusal">No request refused yet.</p>
     </section>
 
     <section class="panel vg-glass" aria-labelledby="latency-title">
       <div class="panel-head">
         <div>
-          <h2 id="latency-title">Latency — measured, not promised</h2>
+          <h2 id="latency-title">Latency, measured</h2>
           <p>From this run's rotations. Configured intervals are listed for comparison only.</p>
         </div>
       </div>
@@ -66,31 +117,32 @@
       <div class="panel-head">
         <div>
           <h2 id="timeline-title">Rotation timeline</h2>
-          <p>Newest first. Each change: Vault created → Agent wrote the file → consumer reloaded, and the door's stale/fresh check.</p>
+          <p>Newest first. When Vault created each version, when the verifier adopted it, and when the client reloaded it.</p>
         </div>
       </div>
-      <ol class="timeline" id="timeline" aria-label="Rotations seen by the consumer"></ol>
+      <ol class="timeline" id="timeline" aria-label="Rotations seen by the parties"></ol>
       <p class="dim" id="timeline-empty">No rotation seen yet. Run <code>make rotation-rotate SECRET=api-key/secure-door</code> or wait for the schedule.</p>
     </section>
 
     <section class="panel vg-glass" aria-labelledby="log-title">
       <div class="panel-head">
-        <div><h2 id="log-title">Live log</h2><p>The consumer's last 200 lines. Values are never logged.</p></div>
+        <div><h2 id="log-title">Live log</h2><p>Both parties, merged by time. Values are never logged.</p></div>
       </div>
-      <div class="log" id="log" tabindex="0" role="log" aria-label="Consumer log"></div>
+      <div class="log" id="log" tabindex="0" role="log" aria-label="Verifier and client log"></div>
     </section>
 
     <section class="panel vg-glass" aria-labelledby="proves-title">
-      <h2 id="proves-title">What this proves — and what it does not</h2>
+      <h2 id="proves-title">What this proves, and what it does not</h2>
       <div class="proves">
         <div><h3>Proves</h3><ul>
           <li>Vault KV v2 versions really change (the rotation add-on writes them).</li>
-          <li>A Vault Agent sidecar alone authenticates, reads and renders the latest version.</li>
-          <li>The running app notices, reloads without restarting, and stops using the old value.</li>
+          <li>Two workloads with separate identities each receive the new version from their own Vault Agent.</li>
+          <li>A separate verifier accepts the new key and refuses the old one: at once in strict mode, after the grace period otherwise.</li>
+          <li>The client reloads without restarting; the gap between the two parties is measured, not assumed.</li>
         </ul></div>
         <div><h3>Does not prove</h3><ul>
-          <li>Issuer-side rotation: no external system issued or revoked anything.</li>
-          <li>That a real service rejects the old credential: the door is fictional.</li>
+          <li>Issuer-side rotation by an external provider: here the application owns the credential, by design.</li>
+          <li>Anything about a real door: the protected resource is fictional, the cryptographic check is not.</li>
           <li>Vault authorisation from the connectivity row: it shows reachability only.</li>
         </ul></div>
       </div>

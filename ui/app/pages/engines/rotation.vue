@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { RotationResponse, RotationSecretView } from '../../../shared/kv-rotation'
-import { compliancePill, duration, relative, triggerLabel } from '../../../shared/kv-rotation'
+import { OWNERSHIP_GUIDE, compliancePill, duration, relative, triggerLabel } from '../../../shared/kv-rotation'
 
 useHead({ title: 'Rotation · Shift Gear' })
 definePageMeta({ middleware: ['auth'] })
@@ -123,7 +123,7 @@ function downloadReport() {
         <div>
           <p class="eyebrow">Engines · KV v2</p>
           <h1 id="rotation-title">Rotation</h1>
-          <p>Values rotate inside Vault on a schedule, after use, or on request. Each rotation is a new KV v2 version; this page shows fingerprints, never values.</p>
+          <p>Policy-driven rotation and distribution of application-owned static secrets, using Vault KV v2 and Vault Agent. Values rotate on a schedule, after use or on request; each rotation is a new KV v2 version. This page shows fingerprints, never values.</p>
         </div>
         <button class="secondary-button" type="button" :disabled="checking" @click="refresh()">
           <svg class="button-icon" :class="{ spinning: checking }" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M16.5 10a6.5 6.5 0 1 1-1.9-4.6M16.5 3.5v5h-5" /></svg>
@@ -176,6 +176,37 @@ function downloadReport() {
         <button class="secondary-button" type="button" @click="downloadReport">Download report (JSON)</button>
       </section>
 
+      <!-- Ownership -->
+      <section class="panel vg-glass" aria-labelledby="owner-title">
+        <div class="panel-head">
+          <div>
+            <h2 id="owner-title">Who owns the credential?</h2>
+            <p>Whoever can invalidate the old value decides how it should rotate. Replacing a value in Vault changes trust only when the application issues and verifies it.</p>
+          </div>
+        </div>
+        <ul class="owners">
+          <li v-for="g in OWNERSHIP_GUIDE" :key="g.owner"><strong>{{ g.owner }}</strong> → use {{ g.use }}: <span class="dim">{{ g.example }}</span></li>
+        </ul>
+        <h3 class="native-title">Rotated natively by Vault</h3>
+        <div class="vg-table-wrap" tabindex="0" role="region" aria-label="Keys rotated natively by Vault">
+          <table class="vg-table">
+            <thead><tr><th scope="col">Key</th><th scope="col">Engine</th><th scope="col">Latest version</th><th scope="col">Rotates every</th><th scope="col">Last rotated</th></tr></thead>
+            <tbody>
+              <tr v-for="k in data.native ?? []" :key="k.name">
+                <td class="mono">transit/{{ k.name }}</td>
+                <td>Transit</td>
+                <template v-if="k.state === 'live'">
+                  <td class="num">v{{ k.latestVersion }}</td>
+                  <td class="num">{{ k.autoRotateSeconds ? duration(k.autoRotateSeconds) : 'not scheduled' }}</td>
+                  <td class="num">{{ k.lastRotated ? relative(Date.parse(k.lastRotated) / 1000, now) : '—' }}</td>
+                </template>
+                <td v-else colspan="3" class="dim">{{ k.state === 'denied' ? 'Vault does not allow you to read this key' : 'not available' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       <!-- Inventory -->
       <section v-if="managed.length" class="panel vg-glass" aria-labelledby="inventory-title">
         <div class="panel-head">
@@ -188,7 +219,7 @@ function downloadReport() {
         <div class="vg-table-wrap" tabindex="0" role="region" aria-label="Managed secrets table">
           <table class="vg-table">
             <thead>
-              <tr><th>Secret</th><th>Strategies</th><th>Version</th><th>Fingerprint</th><th>Last change</th><th>Reads</th><th>Next (time)</th><th>Status</th></tr>
+              <tr><th>Secret</th><th>Owner</th><th>Strategies</th><th>Version</th><th>Fingerprint</th><th>Last change</th><th>Reads</th><th>Next (time)</th><th>Status</th></tr>
             </thead>
             <tbody>
               <template v-for="s in managed" :key="s.id">
@@ -198,6 +229,7 @@ function downloadReport() {
                       <span class="mono">{{ s.id }}</span>
                     </button>
                   </td>
+                  <td>{{ s.owner ?? 'not declared' }}</td>
                   <td><span v-for="st in s.strategies" :key="st" class="vg-pill strategy">{{ strategyLabel(st) }}</span><span v-if="!s.strategies.length" class="dim">not reported</span></td>
                   <td class="num">{{ s.currentVersion ? `v${s.currentVersion}` : '—' }}</td>
                   <td class="mono">{{ latest(s)?.fingerprint ?? '—' }}</td>
@@ -207,7 +239,7 @@ function downloadReport() {
                   <td><span class="vg-pill" :class="`vg-pill--${compliancePill(comp(s)?.compliant).tone}`">{{ compliancePill(comp(s)?.compliant).label }}</span></td>
                 </tr>
                 <tr v-if="expanded === s.id" class="detail">
-                  <td colspan="8">
+                  <td colspan="9">
                     <div :id="`timeline-${s.type}-${s.id.split('/')[1]}`" class="detail-body">
                       <div class="detail-head">
                         <p class="path mono">{{ s.path }}</p>
@@ -274,6 +306,8 @@ function downloadReport() {
 </template>
 
 <style scoped>
+.owners { margin: 0 0 14px; padding-left: 18px; font-size: 13px; display: grid; gap: 4px; }
+.native-title { margin: 6px 0 8px; font-size: 13px; font-weight: 700; }
 .reasons { margin: 12px 0; padding-left: 18px; color: var(--vg-critical); font-size: 13px; }
 .ok-line { color: var(--vg-healthy); font-size: 13px; margin: 12px 0; }
 .dim { color: var(--vg-text-dim); font-size: 12.5px; }

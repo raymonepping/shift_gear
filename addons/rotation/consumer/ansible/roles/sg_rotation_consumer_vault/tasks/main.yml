@@ -1,7 +1,7 @@
 ---
-# The Vault Agent's Kubernetes auth role (sg-ansible-platform). Read first,
-# write only when absent or different.
-- name: Configure the Secure Door's Kubernetes auth role
+# One Kubernetes auth role per Secure Door party (sg-ansible-platform). Read
+# first, write only when absent or different. The 01_09 shared role goes.
+- name: Configure the Secure Door parties' Kubernetes auth roles
   module_defaults:
     ansible.builtin.uri:
       ca_path: "{{ sg_rotation_consumer_vault_ca }}"
@@ -10,28 +10,42 @@
         X-Vault-Namespace: "{{ sg_rotation_consumer_vault_namespace }}"
   no_log: true
   block:
-    - name: Read the role
+    - name: Read the roles
       ansible.builtin.uri:
-        url: "{{ sg_rotation_consumer_vault_addr }}/v1/auth/kubernetes/role/sg-rotation-consumer"
+        url: "{{ sg_rotation_consumer_vault_addr }}/v1/auth/kubernetes/role/{{ item }}"
         status_code: [200, 404]
+      loop: "{{ (sg_rotation_consumer_k8s_roles | list) + sg_rotation_consumer_retired_roles }}"
       check_mode: false
-      register: sg_rotation_consumer_vault_role
+      register: sg_rotation_consumer_vault_roles
 
-    - name: Write the role when absent or changed
+    - name: Write a role when absent or changed
+      vars:
+        want: "{{ sg_rotation_consumer_k8s_roles[item.item] }}"
+        have: "{{ item.json.data | default({}) if item.status == 200 else {} }}"
       ansible.builtin.uri:
-        url: "{{ sg_rotation_consumer_vault_addr }}/v1/auth/kubernetes/role/sg-rotation-consumer"
+        url: "{{ sg_rotation_consumer_vault_addr }}/v1/auth/kubernetes/role/{{ item.item }}"
         method: POST
         body_format: json
-        body: "{{ sg_rotation_consumer_k8s_role }}"
+        body: "{{ want }}"
         status_code: [200, 204]
       changed_when: true
+      loop: "{{ sg_rotation_consumer_vault_roles.results | selectattr('item', 'in', sg_rotation_consumer_k8s_roles) | list }}"
       when: >-
-        sg_rotation_consumer_vault_role.status == 404 or
-        (sg_rotation_consumer_vault_role.json.data.audience | default('', true)) != sg_rotation_consumer_k8s_role.audience or
-        (sg_rotation_consumer_vault_role.json.data.token_ttl | default(0) | int) != sg_rotation_consumer_k8s_role.token_ttl or
-        (sg_rotation_consumer_vault_role.json.data.token_max_ttl | default(0) | int) != sg_rotation_consumer_k8s_role.token_max_ttl or
-        (sg_rotation_consumer_vault_role.json.data.policies | default([]) | sort) != (sg_rotation_consumer_k8s_role.policies | sort) or
-        (sg_rotation_consumer_vault_role.json.data.bound_service_account_names | default([]) | sort)
-          != (sg_rotation_consumer_k8s_role.bound_service_account_names | sort) or
-        (sg_rotation_consumer_vault_role.json.data.bound_service_account_namespaces | default([]) | sort)
-          != (sg_rotation_consumer_k8s_role.bound_service_account_namespaces | sort)
+        item.status == 404 or
+        (have.audience | default('', true)) != want.audience or
+        (have.token_ttl | default(0) | int) != want.token_ttl or
+        (have.token_max_ttl | default(0) | int) != want.token_max_ttl or
+        (have.policies | default([]) | sort) != (want.policies | sort) or
+        (have.bound_service_account_names | default([]) | sort) != (want.bound_service_account_names | sort) or
+        (have.bound_service_account_namespaces | default([]) | sort) != (want.bound_service_account_namespaces | sort)
+
+    - name: Remove the retired shared role
+      ansible.builtin.uri:
+        url: "{{ sg_rotation_consumer_vault_addr }}/v1/auth/kubernetes/role/{{ item.item }}"
+        method: DELETE
+        status_code: [200, 204]
+      changed_when: true
+      loop: >-
+        {{ sg_rotation_consumer_vault_roles.results
+           | selectattr('item', 'in', sg_rotation_consumer_retired_roles)
+           | selectattr('status', 'equalto', 200) | list }}

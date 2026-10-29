@@ -12,6 +12,7 @@ from dataclasses import dataclass
 # Summary keys (all non-secret).
 MANAGED_BY = "rotation_managed_by"
 TYPE = "rotation_type"
+OWNER = "rotation_owner"
 STRATEGIES = "rotation_strategies"
 LAST_ROTATED = "rotation_last_rotated"
 LAST_TRIGGER = "rotation_last_trigger"
@@ -20,6 +21,7 @@ READS_CURSOR = "rotation_reads_cursor"
 REQUEST = "rotation_request"            # written by humans: <uuid>|<actor>|<reason>
 SERVED = "rotation_request_served"      # last served request uuid
 WATCH = "rotation_watch"                # <path>@<version>[,<path>@<version>...]
+RETIRED_AT = "rotation_retired_at"      # set when a secret leaves the configuration
 MANAGED_BY_VALUE = "kv-rotation-controller"
 
 TRIGGERS = ("created", "time", "usage", "request", "event", "recovered")

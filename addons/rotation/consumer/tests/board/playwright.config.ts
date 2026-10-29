@@ -1,7 +1,7 @@
 import { defineConfig, devices } from '@playwright/test'
 
 // The Secure Door board (no sign-in: it shows only non-secret data).
-// Run by `make rotation-consumer-test` (c07), using ui/node_modules via a symlink.
+// Run by `make rotation-consumer-test` (d04), using ui/node_modules via a symlink.
 export default defineConfig({
   testDir: '.',
   workers: 1,

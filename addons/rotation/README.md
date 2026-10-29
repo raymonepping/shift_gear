@@ -1,7 +1,12 @@
 # addons/rotation — KV v2 value rotation
 
-A removable add-on that rotates Vault KV v2 values on a schedule, after use, or
-on request. The full description is in [docs/rotation.md](../../docs/rotation.md),
+> Policy-driven rotation and distribution of application-owned static secrets
+> using HashiCorp Vault KV v2 and Vault Agent.
+
+A removable add-on that rotates Vault KV v2 values on a schedule, after use, on
+an event, or on request. Every secret declares `owner: application`; anything
+Vault or an external provider owns is refused, with the right alternative
+named ([when KV rotation makes sense](../../docs/rotation.md#when-kv-rotation-makes-sense-who-owns-the-credential)). The full description is in [docs/rotation.md](../../docs/rotation.md),
 and the decision record is D17 in [docs/decisions.md](../../docs/decisions.md).
 
 ```text
@@ -15,7 +20,8 @@ addons/rotation/
 ├── policies/              Vault ACL policy templates (rendered from rotation.yaml)
 ├── ansible/               preflight · configure (auth role, groups) · verify · down
 ├── scripts/               rotation.sh (lifecycle), validate.sh (offline gate)
-├── tests/live/            make rotation-test (s01–s11 + leak check) and its overlay
+├── tests/live/            make rotation-test (s01–s12 + leak check) and its overlay
+├── consumer/              the Secure Door: verifier + client + board (make rotation-consumer-*)
 └── ASSESSMENT.md          the 01_01 probe results this design rests on
 ```
 

@@ -30,7 +30,12 @@ def utcnow() -> datetime:
 
 
 def iso(moment: datetime | None) -> str | None:
-    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if moment else None
+    """UTC with milliseconds: adoption, reload and denial-window times are
+    compared across the two parties, and whole seconds hid who was first."""
+    if not moment:
+        return None
+    m = moment.astimezone(timezone.utc)
+    return m.strftime("%Y-%m-%dT%H:%M:%S.") + f"{m.microsecond // 1000:03d}Z"
 
 
 def parse_time(text: str | None) -> datetime | None:

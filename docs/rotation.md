@@ -1,5 +1,8 @@
 # KV v2 value rotation (add-on)
 
+> Policy-driven rotation and distribution of application-owned static secrets
+> using HashiCorp Vault KV v2 and Vault Agent.
+
 Vault KV v2 stores and versions static secrets, but it does not rotate them. This
 removable add-on does. A small controller generates cryptographically secure
 values and writes each one to the existing `kv` mount as a new KV v2 version,
@@ -18,11 +21,56 @@ Code: [`addons/rotation/`](../addons/rotation/README.md).
 ## The boundary: value rotation, not issuer rotation
 
 This add-on replaces values **inside Vault**. It does not change a credential
-at the system that issued it, so there is no target to update, no consumer to
-cut over and no old key to revoke. Vault's own engines already do
-issuer-side rotation: database credentials (dynamic and static roles), PKI
-certificates and Transit keys. The add-on covers static values those engines
-cannot, and the console says so.
+at a system outside Vault. Vault's own engines already do issuer-side
+rotation: database credentials (dynamic and static roles), PKI certificates
+and Transit keys. The add-on covers static values those engines cannot, and
+only when the application itself decides what the value means.
+
+## When KV rotation makes sense: who owns the credential?
+
+Writing a new version to KV is a real write, but on its own it is not a
+security improvement. What matters is whether the system that checks the
+credential now trusts the new value and refuses the old one. So the question
+to ask first is: **who owns the credential, and who can invalidate it?**
+
+- **Vault owns it** (through an engine): use that engine. Database passwords,
+  PKI certificates and Transit keys are rotated by Vault itself, at the
+  system that checks them.
+- **An external provider owns it** (a SaaS or cloud API key): the provider
+  must issue the new credential. Rotating only the KV copy breaks
+  authentication. Say Vault stores key X at 09:00 and the provider accepts X.
+  At 10:00 a controller writes Y to KV, and at 10:01 the Agent hands Y to the
+  application. The provider still knows only X, so the application now fails.
+  Nothing became safer.
+- **The application owns it** (a shared HMAC secret between your own
+  services, an internal access key your own gateway checks): this add-on fits.
+  Your own verifier reads the new version, adopts it, and refuses the old
+  one. That is where changing a KV value changes trust.
+
+If nobody invalidates the old value, changing it in Vault is housekeeping, not
+credential rotation.
+
+The configuration enforces this. Every secret declares `owner:`, and only
+`application` is accepted:
+
+| `owner:` | Result |
+| --- | --- |
+| `application` | accepted |
+| `vault-native` | refused: "use the matching Vault engine instead (database, PKI or Transit rotate natively)" |
+| `external-provider` | refused: "rotating only the KV copy breaks authentication; the provider must issue the new credential, which this add-on does not do" |
+
+Signing keys are the clearest example of the first case. The lab's
+`session-signing` key used to be a KV secret of type `signing-key`. It is now
+a **Transit key** (`transit/keys/session-signing`, ed25519, not exportable,
+`auto_rotate_period` one hour, which is Transit's minimum). Vault rotates it
+natively, keeps every version for verification, and never hands the private
+key out. Observed on 2026-10-29: v1 created 07:41:31Z, v2 rotated by Vault itself
+at 08:41:54Z; `min_decryption_version` stays 1. Operators and auditors may read
+the key's metadata; nobody may rotate it by hand (403). The core `platform` root owns it, so `make rotation-down` cannot
+touch it; see the D17 addendum in [decisions](decisions.md). The console shows
+it beside the KV secrets, under "Rotated natively by Vault". The old KV secret
+is not deleted: the controller marks it `rotation_retired_at` and stops
+managing it, and its versions and history stay readable.
 
 Three rules hold throughout:
 
@@ -96,10 +144,12 @@ rotation:
   secrets:
     - name: demo                       # SECRET=api-key/demo
       type: api-key
+      owner: application               # required; the only owner accepted
       strategies: [time, usage, event]
       usage: { max_reads: 3 }          # may tighten the type, never loosen it
-    - name: session-signing
-      type: signing-key
+    - name: secure-door                # the Secure Door's shared HMAC secret
+      type: api-key
+      owner: application
       strategies: [time, event]
       events:
         - { match: "kv-v2/data-*", path: shift-gear/config/app-config }
@@ -115,6 +165,8 @@ Every generator has an entropy floor of 16 characters or 16 bytes.
 
 **Validation** runs three times: Terraform preconditions at plan time,
 `make rotation-validate`, and the controller at start-up. These are refused:
+- an `owner:` other than `application`, with a message naming the right
+  alternative;
 - an interval longer than `max_age`;
 - a per-secret override that loosens its type (interval or `max_reads`);
 - a generator that cannot meet `min_length`;
@@ -124,7 +176,7 @@ Every generator has an entropy floor of 16 characters or 16 bytes.
 - an event rule that watches the managed prefix (it would loop);
 - more than 8 event rules per secret, or a version checkpoint over 480
   bytes (custom metadata values hold 512);
-- `max_versions` above 50 (64 custom metadata keys, minus the 10 summary
+- `max_versions` above 50 (64 custom metadata keys, minus the 12 summary
   keys).
 
 ## Strategies
@@ -229,9 +281,13 @@ Evidence: `.build/addons/rotation/rotation-test.json`. Demo scenario:
 ## Console: Engines › Rotation
 
 The page appears under Engines while the add-on is installed. Its sections:
-- the hero, with managed count, compliance %, next rotation and events mode;
+- the hero, with the positioning line, managed count, compliance %, next
+  rotation and events mode;
+- **Who owns the credential?**: the three answers above, and the Transit keys
+  Vault rotates natively (name, type, latest version, auto-rotate period),
+  read with the signed-in person's own token;
 - Compliance per type, with reasons;
-- the managed-secrets table, with an expandable version timeline (v*N* ·
+- the managed-secrets table, with an Owner column and an expandable version timeline (v*N* ·
   fingerprint · trigger · time · actor);
 - **Rotate now**, shown only when Vault grants you `patch`. The page reports
   "rotated" only when Vault shows the new version;
@@ -248,45 +304,88 @@ history the person may read is still shown from Vault.
 | ada (engineer) | yes (core `sg-engineer` reads `kv/metadata/shift-gear/*`) | no |
 | ben (staff) | denied by Vault | no |
 
-## Consumer demo: Secure Door (prompt 01_09)
+## Consumer demo: Secure Door (prompts 01_09, 01_10)
 
-The rotation add-on changes values inside Vault. The **Secure Door** consumer
-shows the other side: an app that keeps running while its secret rotates. It
-notices each new KV v2 version, reloads it without restarting, and shows the
-old value refused and the new one accepted. Details:
+The rotation add-on changes values inside Vault. The **Secure Door** shows the
+case where that changes trust: an application-owned shared secret, checked by
+a verifier the application runs itself. Details:
 [`addons/rotation/consumer/README.md`](../addons/rotation/consumer/README.md).
 
 ```text
-make rotation-consumer-up                           # board: https://secure-door.<apps_domain>
-make rotation-rotate SECRET=api-key/secure-door     # watch it arrive in the board and the log
-make rotation-consumer-logs
-make rotation-consumer-down                         # removes only the consumer
+make rotation-consumer-up                           # grace mode (30 s); board: https://secure-door.<apps_domain>
+make rotation-consumer-up GRACE=0                   # strict mode
+make rotation-rotate SECRET=api-key/secure-door     # watch both parties follow on the board
+make rotation-consumer-status
+make rotation-consumer-down                         # removes only the Secure Door
 ```
 
-- **One pod, four containers.**
-  - `vault-agent` is the only Vault client: a projected token mounted there
-    only, no sink, no listener. It renders one atomic JSON snapshot every 5 s.
-  - `vault-probe` checks reachability without a token.
-  - `consumer` (Python stdlib) hot-reloads and runs the door.
-  - `board` (Node, dependency-free) serves the page from a non-secret status
-    file.
-- **The door is fictional, and every surface says so.** GRANTED means the
-  cached credential matches Vault's latest version; nothing external
-  validates or revokes anything.
-- **Watched secret:** `api-key/secure-door` (time and event, 60 s). Not
-  `api-key/demo`: an Agent re-reading every 5 s would count as usage there
-  and trigger rotations.
+> The door is fictional; the trust decision is real: a separate verifier, with
+> its own identity and its own copy of the secret, accepts the new key and
+> rejects the old one.
 
-Measured on 2026-10-28 (`make rotation-consumer-test`, two full runs):
-- The Agent accepted the 5 s interval: 6–7 successful fetches per 30 s.
-- Vault created → Agent wrote file: median 1.6–2.5 s, max 3.9–4.4 s
-  (n=4–5 per run).
-- File → consumer reloaded: median 0.44–0.63 s, max 0.68–0.69 s.
-- Up to four rotations per run passed with the same PID and container.
-- Three versions missed while stopped were reported on restart.
-- Vault cut off: the probe showed `unreachable` within 6.9 s, the credential
-  turned `stale` at 66 s, and it was `current` again 5.7 s after the
-  NetworkPolicy came back.
+- **Two parties, two identities.** `door-verifier` and `door-client` are
+  separate Deployments, each with its own ServiceAccount, Kubernetes auth role
+  (`sg-rotation-door-verifier`, `sg-rotation-door-client`) and read-only
+  policy on the one secret. In each pod, `vault-agent` is the only Vault
+  client: the projected token is mounted there only, with no sink and no
+  listener. `vault-probe` checks reachability without a token.
+- **No secret crosses the network.** Every second the client sends
+  `key_version`, `ts`, a random `nonce` and
+  `HMAC-SHA256(secret_v, "secure-door|<client>|<ts>|<nonce>")` to the
+  verifier's `/enter`. The verifier refuses a timestamp more than 30 s off
+  (`stale-timestamp`), a nonce it has seen (`replayed-nonce`), a version newer
+  than its own (`version-unknown`), a version no longer in its key ring
+  (`version-retired`) and a bad signature. It compares with
+  `hmac.compare_digest`.
+- **Cut-over is a verifier setting.** In **grace** mode (default, 30 s) the
+  previous version stays accepted for 30 s after the verifier adopts the new
+  one, so a normal rotation causes no refusals. In **strict** mode
+  (`GRACE=0`) the previous version is refused the moment the verifier adopts
+  the new one. When the client's Agent delivers first, the client answers
+  `version-unknown` by signing with the previous key it still holds.
+- **The board** (dependency-free Node) reads both parties' non-secret
+  `/status` and shows both lanes, the mode, the key ring, the denial windows
+  and every refusal by reason. NetworkPolicies allow only client → verifier
+  on 8080, board → both status ports, and the router → board.
+- **Watched secret:** `api-key/secure-door` (`owner: application`; time and
+  event, 60 s). A write to the core `app-config` (an application release)
+  rotates it.
+
+Measured on 2026-10-29 (`make rotation-consumer-test`, 10 of 10 scenarios plus
+the leak check; evidence in `.build/addons/rotation/consumer-test.json`):
+- **Independence (d01):** two ServiceAccounts and two Vault roles; in each
+  pod the projected token is mounted only into `vault-agent`.
+- **Strict mode (d02, 8 rotations):** the two Agents decide who sees a new
+  version first. The client's Agent was first 7 times (by 0.47 to 1.46 s);
+  1 or 2 fallbacks to the previous key covered the gap, with 0 refusals. The
+  verifier was first once (by 3.62 s): the client was refused 3 times with
+  `version-retired`, a window of 3.01 s, then granted again by the same
+  process. An earlier run with the same code (millisecond timestamps) had the
+  verifier first twice (by 1.37 and 1.39 s): 1 refusal each, granted again on
+  the next request 1.0 s later.
+- **Grace mode (d03):** two rotations with 0 refusals. The old key, 5 s after
+  its grace ran out: DENIED `version-retired`. A request 60 s old: DENIED
+  `stale-timestamp`. The same signed request twice: GRANTED, then DENIED
+  `replayed-nonce`.
+- **Client later than the grace (d03b):** with its Vault allow removed, the
+  client kept the old key and was granted for 30.1 s (the grace), then
+  refused 15 times with `version-retired` (15.04 s) until its Agent could
+  fetch again.
+- **Client restart (d05):** stopped across three rotations, it reported
+  `v485 -> v488`, `missed 2`; the verifier process was not interrupted.
+- **Verifier restart (d06):** the new verifier's ring held only the current
+  version. A client still on the previous one was refused (`version-retired`)
+  until it reloaded. During the `Recreate` rollout the verifier was
+  unreachable for about a minute (63 failed requests); the client reported
+  both.
+- **Cascade (d07):** a write to `app-config` rotated `api-key/secure-door`
+  (`trigger=event`) 9.0 s later, and both parties followed.
+- **Board (d04):** Playwright and axe at 1440 and 390 wide, 8 tests; no value
+  in the page or its API. **Leak check:** 20 values, 607 places, no hits.
+
+Two things the first runs taught: timestamps in whole seconds hid which party
+was first (the status now uses milliseconds), and a PID inside a container is
+always 1, so process identity is checked by start time.
 
 ![Secure Door board](screenshots/secure-door-desktop.png)
 
@@ -311,6 +410,7 @@ version's record is in the secret's custom metadata.
 
 ## Not included
 
-- Issuer-side rotation, target connectors and consumer cut-over: out of scope
-  by design (input 05).
+- Issuer-side rotation and target connectors: out of scope by design (input
+  05). A credential owned by Vault or by an external provider is refused at
+  configuration time (`owner:`).
 - The Red Pass (Podman) adapter: see [`addons/rotation/README.md`](../addons/rotation/README.md).

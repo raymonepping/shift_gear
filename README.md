@@ -134,12 +134,15 @@ The workload pod reads the new value from the mounted Secret without a Vault tok
 
 ## KV rotation add-on
 
-Vault KV v2 versions secrets but does not rotate them. A removable add-on rotates values inside Vault: per secret type, on a schedule, after a number of reads, or on request. It keeps every change as a KV v2 version with a recorded trigger, and reports compliance.
+> Policy-driven rotation and distribution of application-owned static secrets using HashiCorp Vault KV v2 and Vault Agent.
+
+Vault KV v2 versions secrets but does not rotate them. A removable add-on rotates values inside Vault: per secret type, on a schedule, after a number of reads, on an event, or on request. It keeps every change as a KV v2 version with a recorded trigger, and reports compliance. It accepts only secrets the application owns (`owner: application`): a credential owned by Vault belongs to its engine (signing keys are a Transit key here), and one owned by an external provider must be rotated by that provider. The **Secure Door** shows the case where a new KV version changes trust: an independent verifier adopts it and refuses the old one.
 
 ```sh
 make rotation-up                              # install and prove it rotates
 make rotation-history SECRET=api-key/demo     # v1 -> v2 -> v3 with fingerprints and triggers
 make rotation-down                            # remove; secrets and history stay in Vault
+make rotation-consumer-up                     # Secure Door: verifier + client + board
 ```
 
 Details: [docs/rotation.md](docs/rotation.md). In the console: **Engines › Rotation**.

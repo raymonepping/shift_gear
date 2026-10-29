@@ -69,6 +69,11 @@ run "app_data_key_non_exportable" {
     condition     = vault_transit_secret_backend_key.app_data.deletion_allowed == false
     error_message = "app-data transit key deletion must not be allowed"
   }
+
+  assert {
+    condition     = vault_transit_secret_backend_key.session_signing.auto_rotate_period == 3600 && !vault_transit_secret_backend_key.session_signing.exportable && !vault_transit_secret_backend_key.session_signing.deletion_allowed
+    error_message = "session-signing is rotated natively by Vault (auto_rotate_period), non-exportable and not deletable"
+  }
 }
 
 run "all_platform_policies_declared" {

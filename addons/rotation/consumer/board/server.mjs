@@ -1,23 +1,24 @@
-// board/server.mjs — the Secure Door board (prompt 01_09). Dependency-free Node.
+// board/server.mjs — the Secure Door board (prompts 01_09, 01_10). Dependency-free Node.
 //
-// Serves one page and the consumer's NON-SECRET status document:
-//   GET /                 the page          GET /api/state   status JSON
+// Serves one page and the two parties' NON-SECRET status documents, merged:
+//   GET /                 the page          GET /api/state   {verifier, client} JSON
 //   GET /api/events       Server-Sent Events on every status change
 //   GET /healthz          liveness          static: /board.css /tokens.css /board.js /fonts/*
-// It reads only BOARD_STATUS_FILE (versions, fingerprints, timings, verdicts) and
-// its own static files. It can never serve a secret value: it has no access to
-// the Agent-rendered snapshot. It never calls Vault.
+// It fetches BOARD_SOURCES ({"verifier": url, "client": url}, each party's
+// /status on 9090: versions, fingerprints, timings, verdicts) and serves its own
+// static files. It can never serve a secret value: it has no access to either
+// party's Agent-rendered snapshot. It never calls Vault.
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const PORT = Number(process.env.BOARD_PORT ?? 8080)
-const STATUS_FILE = process.env.BOARD_STATUS_FILE ?? '/status/state.json'
+const SOURCES = JSON.parse(process.env.BOARD_SOURCES ?? '{"verifier":"http://door-verifier:9090/status","client":"http://door-client:9090/status"}')
 const STATIC_DIR = process.env.BOARD_STATIC_DIR ?? '/opt/board/static'
 const FONT_DIR = process.env.BOARD_FONT_DIR ?? '/opt/board/fonts'
-const WATCH_MS = Number(process.env.BOARD_WATCH_MS ?? 500)
-
+const WATCH_MS = Number(process.env.BOARD_WATCH_MS ?? 1000)
+const FETCH_TIMEOUT_MS = Number(process.env.BOARD_FETCH_TIMEOUT_MS ?? 2000)
 const STATIC = {
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/index.html': ['index.html', 'text/html; charset=utf-8'],
@@ -36,24 +37,55 @@ const SECURITY_HEADERS = {
   'Cross-Origin-Resource-Policy': 'same-origin',
 }
 
-export function readStatus(file = STATUS_FILE) {
+// One party's status, or why it is missing. A referenced timer aborts the
+// fetch (AbortSignal.timeout alone can fail to fire on a hung socket).
+async function fetchParty(url) {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS)
   try {
-    const raw = fs.readFileSync(file, 'utf8')
-    const doc = JSON.parse(raw)
-    return { ok: true, doc, raw }
-  } catch {
-    return { ok: false, doc: null, raw: null }
+    const res = await fetch(url, { signal: ctrl.signal, headers: { accept: 'application/json' } })
+    if (!res.ok) return { doc: null, error: `status ${res.status}` }
+    return { doc: await res.json(), error: null }
+  } catch (err) {
+    return { doc: null, error: err?.name === 'AbortError' ? 'timed out' : 'unreachable' }
+  } finally {
+    clearTimeout(timer)
   }
 }
 
-const clients = new Set()
-let lastRaw = null
+// Merge: the last good document per party is kept (marked with the fetch
+// error) so a restarting party shows as "not answering", not as blank.
+const parties = Object.fromEntries(Object.keys(SOURCES).map((k) => [k, { doc: null, error: 'not fetched yet', at: null }]))
+let merged = null
+let mergedKey = null
 
-function broadcast() {
-  const { ok, raw } = readStatus()
-  if (!ok || raw === lastRaw) return
-  lastRaw = raw
-  for (const res of clients) res.write(`event: state\ndata: ${raw.replace(/\n/g, '')}\n\n`)
+export async function refresh() {
+  const results = await Promise.all(Object.entries(SOURCES).map(async ([k, url]) => [k, await fetchParty(url)]))
+  const now = new Date().toISOString()
+  for (const [k, r] of results) {
+    if (r.doc) parties[k] = { doc: r.doc, error: null, at: now }
+    else parties[k] = { ...parties[k], error: r.error }
+  }
+  const doc = { schema: 2, generated_at: now, secret: null, parties: {} }
+  for (const [k, p] of Object.entries(parties)) {
+    doc.secret ??= p.doc?.secret ?? null
+    doc.parties[k] = { answering: p.error === null, error: p.error, fetched_at: p.at, status: p.doc }
+  }
+  merged = Object.values(parties).some((p) => p.doc) ? doc : null
+  // Change detection ignores the timestamps that move on every fetch.
+  const key = merged ? JSON.stringify(merged, (k, v) => (k === 'generated_at' || k === 'fetched_at' ? undefined : v)) : null
+  const changed = key !== mergedKey
+  mergedKey = key
+  return changed
+}
+
+export function state() { return merged }
+
+const clients = new Set()
+const frame = (doc) => `event: state\ndata: ${JSON.stringify(doc)}\n\n`
+
+async function tick() {
+  if (await refresh() && merged) for (const res of clients) res.write(frame(merged))
 }
 
 export function handler(req, res) {
@@ -68,16 +100,14 @@ export function handler(req, res) {
     return
   }
   if (p === '/api/state') {
-    const { ok, raw } = readStatus()
-    res.writeHead(ok ? 200 : 503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...SECURITY_HEADERS })
-    res.end(ok ? raw : '{"error":"status not available yet"}')
+    res.writeHead(merged ? 200 : 503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...SECURITY_HEADERS })
+    res.end(merged ? JSON.stringify(merged) : '{"error":"no party has answered yet"}')
     return
   }
   if (p === '/api/events') {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive', ...SECURITY_HEADERS })
     res.write('retry: 2000\n\n')
-    const { ok, raw } = readStatus()
-    if (ok) res.write(`event: state\ndata: ${raw.replace(/\n/g, '')}\n\n`)
+    if (merged) res.write(frame(merged))
     clients.add(res)
     const ping = setInterval(() => res.write(': ping\n\n'), 15000)
     req.on('close', () => { clearInterval(ping); clients.delete(res) })
@@ -103,8 +133,10 @@ function sendFile(res, file, type, cache = 'no-cache') {
 
 export function start(port = PORT) {
   const server = http.createServer(handler)
-  server.listen(port, () => console.log(`${new Date().toISOString()} INFO  [board] listening on :${port} status=${STATUS_FILE}`))
-  const timer = setInterval(broadcast, WATCH_MS)
+  server.listen(port, () => console.log(`${new Date().toISOString()} INFO  [board] listening on :${port} sources=${Object.keys(SOURCES).join(',')}`))
+  let running = false
+  const timer = setInterval(() => { if (!running) { running = true; tick().finally(() => { running = false }) } }, WATCH_MS)
+  tick()
   const stop = () => { clearInterval(timer); for (const c of clients) c.end(); server.close(() => process.exit(0)) }
   process.on('SIGTERM', stop)
   process.on('SIGINT', stop)

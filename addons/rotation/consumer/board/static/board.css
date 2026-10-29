@@ -59,6 +59,17 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
 .proves ul { margin: 0; padding-left: 18px; color: var(--vg-text-secondary); font-size: 13px; }
 .panel h2 { margin: 0 0 10px; font-size: 16px; }
 
+/* Two lanes, one per party (each its own glass pane; no nesting). */
+.lanes { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 16px; margin-bottom: 20px; }
+.lanes .panel { margin: 0; }
+.lane-sub { margin: 0 0 6px; font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--vg-text-muted); }
+.lane .signals { margin-top: 14px; grid-template-columns: 1fr; }
+.ring { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px 16px; font-variant-numeric: tabular-nums; }
+.ring li { display: inline-flex; align-items: center; gap: 6px; }
+.outcomes { margin: 0; font-size: 14px; font-variant-numeric: tabular-nums; color: var(--vg-text-primary); }
+.last-refusal { margin: 10px 0 0; font-size: 13px; color: var(--vg-text-secondary); font-variant-numeric: tabular-nums; }
+.verdict-counts { margin: 0; display: flex; flex-wrap: wrap; gap: 6px; font-variant-numeric: tabular-nums; }
+
 @media (max-width: 600px) {
   body { padding: 12px; }
   .vg-hero { padding: 20px 18px 18px; }

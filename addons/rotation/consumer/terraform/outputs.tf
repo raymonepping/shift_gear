@@ -10,8 +10,12 @@ output "secret" {
   value = local.secret_id
 }
 
-output "policy" {
-  value = vault_policy.consumer.name
+output "policies" {
+  value = [for p in vault_policy.party : p.name]
+}
+
+output "grace_seconds" {
+  value = var.grace_seconds
 }
 
 output "render_interval" {

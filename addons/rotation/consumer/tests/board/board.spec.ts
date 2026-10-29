@@ -1,4 +1,4 @@
-// c07 — the Secure Door board against the live consumer (prompt 01_09).
+// d04 — the Secure Door board against the live verifier and client (prompts 01_09, 01_10).
 import AxeBuilder from '@axe-core/playwright'
 import { expect, test } from '@playwright/test'
 import { execFileSync } from 'node:child_process'
@@ -18,17 +18,32 @@ function vault(kind: 'metadata' | 'data'): Promise<any> {
   })
 }
 
-test('the hero shows the version Vault reports, and the honesty statement', async ({ page }) => {
+test('the hero, both lanes and the mode match Vault and the honesty statement', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByRole('heading', { level: 1 })).toHaveText(/ACCESS GRANTED|ACCESS DENIED|STALE/, { timeout: 20_000 })
   const current = (await vault('metadata')).current_version
-  await expect(page.locator('#door-version')).toHaveText(new RegExp(`^v(${current}|${current - 1}|${current + 1})$`), { timeout: 15_000 })
-  await expect(page.getByText(/Fictional door\. GRANTED means the app's cached credential matches Vault's latest/)).toBeVisible()
-  await expect(page.getByText(/No external service validates or revokes anything/)).toBeVisible()
+  const near = new RegExp(`^v(${current}|${current - 1}|${current + 1})$`)
+  await expect(page.locator('#door-client-version')).toHaveText(near, { timeout: 15_000 })
+  await expect(page.locator('#door-verifier-version')).toHaveText(near)
+  await expect(page.locator('#door-mode')).toHaveText(/^(grace \d+ s|strict)$/)
+  await expect(page.getByText(/The door is fictional; the trust decision is real:/)).toBeVisible()
+  await expect(page.getByText(/a separate verifier, with its own\s+identity and its own copy of the secret, accepts the new key and rejects the old one/)).toBeVisible()
   await expect(page.locator('body')).not.toContainText(/agent healthy/i)
-  // Baseline: Vault is reachable from the pod (a broken probe must fail here, not pass).
-  await expect(page.locator('#sig-vault')).toContainText(/^reachable · unsealed/, { timeout: 20_000 })
-  await expect(page.locator('#sig-credential')).toContainText('state current')
+  for (const party of ['verifier', 'client']) {
+    await expect(page.locator(`#${party}-answering`)).toHaveText('answering')
+    // Baseline: Vault is reachable from each pod (a broken probe must fail here, not pass).
+    await expect(page.locator(`#${party}-vault`)).toContainText(/^reachable · unsealed/, { timeout: 20_000 })
+    await expect(page.locator(`#${party}-credential`)).toContainText('state current')
+  }
+  await expect(page.locator('#verifier-ring li').first()).toContainText(/v\d+/)
+  // d02–d03b ran strict rotations, replayed an old key and a nonce, and cut the client off
+  // past the grace period: the windows and refusals are on the board.
+  await expect(page.locator('#window-rows tr').first()).toContainText('version-retired')
+  await expect(page.locator('#verdict-counts')).toContainText(/denied · version-retired/)
+  await expect(page.locator('#verdict-counts')).toContainText(/denied · replayed-nonce/)
+  await expect(page.locator('#verdict-counts')).toContainText(/denied · stale-timestamp/)
+  // A client-first rotation ends in a version-unknown refusal (then the fallback is granted).
+  await expect(page.locator('#last-refusal')).toContainText(/Last refused request: .*(version-retired|version-unknown|replayed-nonce|stale-timestamp)/)
 })
 
 test('a rotation reaches the board, and no value ever does', async ({ page, request }) => {
@@ -50,7 +65,7 @@ test('axe WCAG 2.1 AA: 0 violations (with reduced motion too)', async ({ page })
   for (const motion of ['no-preference', 'reduce'] as const) {
     await page.emulateMedia({ reducedMotion: motion })
     await page.goto('/')
-    await expect(page.getByRole('heading', { level: 1 })).not.toHaveText('Waiting for the consumer…', { timeout: 20_000 })
+    await expect(page.getByRole('heading', { level: 1 })).not.toHaveText('Waiting for the parties…', { timeout: 20_000 })
     const { violations } = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze()
     expect(violations.map((v) => `${motion} [${v.id}] ${v.nodes[0]?.target.join(' ')}`)).toEqual([])
   }
