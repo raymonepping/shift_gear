@@ -27,7 +27,7 @@ jobs:
         run: |
           make proof-live
       - name: Retain sanitized release receipt
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: shift-gear-live-proof
           path: ${{ vars.SHIFT_GEAR_WORKDIR }}/.build/proof-manifest.json
